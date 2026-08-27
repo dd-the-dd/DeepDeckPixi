@@ -11,19 +11,19 @@
     "dist",
     "src/**/*.d.mts"
   ],
-  "main": "./dist/deepdeck-pixi.js",
-  "module": "./dist/deepdeck-pixi.js",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
   "types": "./src/index.d.mts",
   "exports": {
     ".": {
       "types": "./src/index.d.mts",
-      "import": "./dist/deepdeck-pixi.js"
+      "import": "./dist/index.js"
     },
     "./replay-element": {
       "types": "./src/shared/PixiReplayV2Element.d.mts",
-      "import": "./src/shared/PixiReplayV2Element.mjs"
+      "import": "./dist/replay-element.js"
     },
-    "./source/*": "./src/*"
+    "./style.css": "./dist/pixi.css"
   },
   "scripts": {
     "build": "vite build",

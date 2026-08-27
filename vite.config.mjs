@@ -6,9 +6,12 @@ export default defineConfig({
     plugins: [vue()],
     build: {
         lib: {
-            entry: resolve(import.meta.dirname, 'src/index.mjs'),
+            entry: {
+                index: resolve(import.meta.dirname, 'src/index.mjs'),
+                'replay-element': resolve(import.meta.dirname, 'src/shared/PixiReplayV2Element.mjs'),
+            },
             formats: ['es'],
-            fileName: 'deepdeck-pixi',
+            fileName: (_format, entryName) => `${entryName}.js`,
         },
         rollupOptions: {
             external: ['pixi.js', 'vue'],
