@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "deepdeck-pixi-compatibility/v1",
+  "packageVersion": "0.1.0",
+  "engine": {
+    "versions": [">=0.1.0 <0.2.0"],
+    "agentProtocol": ["mtg-agent/v1"],
+    "replaySchemas": ["mtg-pixi-replay/v2"],
+    "sessionSchemas": ["mtg-game-session/v1"]
+  }
+}
