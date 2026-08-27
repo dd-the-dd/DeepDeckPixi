@@ -24,6 +24,7 @@ npm run build
 
 ```js
 import { PixiGame, projectGameSessionView } from '@deepdeck/pixi';
+import '@deepdeck/pixi/style.css';
 ```
 
 `PixiGame` accepts a versioned scene and emits action identifiers; it does not
