@@ -11,12 +11,15 @@ foreach ($path in $tracked) {
     }
 }
 
+$ErrorActionPreference = 'Continue'
 $matches = git grep -n -I -E -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|AIza[0-9A-Za-z_-]{30,}|gh[pousr]_[0-9A-Za-z]{30,}' -- . ':!scripts/check-public-tree.ps1'
-if ($LASTEXITCODE -eq 0) {
+$grepExitCode = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($grepExitCode -eq 0) {
     $matches
     throw 'Potential credential material found in tracked files.'
 }
-if ($LASTEXITCODE -ne 1) {
+if ($grepExitCode -ne 1) {
     throw 'Credential scan failed.'
 }
 
