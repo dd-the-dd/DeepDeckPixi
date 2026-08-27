@@ -24,3 +24,4 @@ if ($grepExitCode -ne 1) {
 }
 
 Write-Host 'Public-tree audit passed.'
+exit 0
