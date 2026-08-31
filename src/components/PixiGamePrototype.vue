@@ -292,6 +292,10 @@ import {
 } from '../helpers/PixiGameLayout.mjs';
 
 const props = defineProps({
+    cardBackUrl: {
+        default: 'https://cards.scryfall.io/back.png',
+        type: String,
+    },
     brandLogoUrl: {
         default: '',
         type: String,
@@ -495,7 +499,9 @@ const imageDiagnostics = ref({
 
 const cardWidth = 118;
 const cardHeight = 166;
-const magicCardBackUrl = `${import.meta.env.BASE_URL}card_back_border_crop.jpg`;
+// Scryfall publishes the canonical card back independently from individual
+// printings. Hosts can override this with a same-origin cached/proxied URL.
+const magicCardBackUrl = props.cardBackUrl || 'https://cards.scryfall.io/back.png';
 const imageLoadMaxAttempts = 4;
 const imageLoadMaxConcurrent = 6;
 const imageLoadRetryDelayMs = 250;
@@ -747,6 +753,33 @@ function createBadge(container, value) {
     container.addChild(badge);
 }
 
+function createSelectionOrderBadge(container, value, width, height) {
+    const badge = new Container();
+    const shadow = new Graphics();
+    shadow.beginFill(0x101828, 0.38);
+    shadow.drawCircle(1, 2, 16);
+    shadow.endFill();
+    const circle = new Graphics();
+    circle.beginFill(0xdc2626);
+    circle.lineStyle(3, 0xffffff);
+    circle.drawCircle(0, 0, 15);
+    circle.endFill();
+    const label = new Text(String(value), new TextStyle({
+        fill: 0xffffff,
+        fontFamily: 'system-ui',
+        fontSize: 15,
+        fontWeight: '900',
+        stroke: 0x7f1d1d,
+        strokeThickness: 2,
+    }));
+    label.anchor.set(0.5);
+    badge.addChild(shadow, circle, label);
+    badge.position.set(-width / 2 + 15, -height / 2 + 15);
+    badge.eventMode = 'none';
+    badge.label = 'card-selection-order';
+    container.addChild(badge);
+}
+
 function createStatsBadge(container, value) {
     const badge = new Container();
     const shadow = new Graphics();
@@ -918,6 +951,9 @@ function createCardView(model, options = {}) {
     if (model.counters) {
         createBadge(view, model.counters);
     }
+    if (Number(model.selectionOrder) > 0) {
+        createSelectionOrderBadge(view, model.selectionOrder, width, height);
+    }
     if (options.showStats && model.stats) {
         createStatsBadge(view, model.stats);
         view.hoveredStatsBadge = createHoveredStatsBadge(view, model.stats);
@@ -1047,6 +1083,7 @@ function sceneCardModel(card, sceneZone = '') {
         name: card.name ?? raw.name ?? 'Unknown card',
         rules: raw.oracleText ?? '',
         sceneZone: card.sourceZone || raw.sourceZone || sceneZone,
+        selectionOrder: Number(card.selectionOrder ?? 0),
         stats: power !== null && power !== undefined
             ? `${power}/${toughness ?? 0}`
             : '',
@@ -1102,6 +1139,7 @@ function liveViewFingerprint(card, zone, options = {}) {
         model.imageUrl,
         model.name,
         model.rules,
+        model.selectionOrder,
         model.stats,
         model.targetable,
         model.type,

@@ -115,19 +115,35 @@ describe('Pixi game controls', () => {
         });
 
         expect(wrapper.get('.pixi-game-brand-name').text()).toBe('DeepDeck Pixi');
+        expect(wrapper.vm.magicCardBackUrl).toBe('https://cards.scryfall.io/back.png');
         wrapper.unmount();
 
         const branded = mount(PixiGamePrototype, {
             props: {
                 brandLogoUrl: '/host-logo.png',
                 brandName: 'Host application',
+                cardBackUrl: '/cached-card-back.png',
                 scene: liveScene(),
             },
         });
         const logo = branded.get('.pixi-game-brand-logo');
         expect(logo.attributes('src')).toContain('/host-logo.png');
         expect(logo.attributes('alt')).toBe('Host application');
+        expect(branded.vm.magicCardBackUrl).toBe('/cached-card-back.png');
         branded.unmount();
+    });
+
+    test('keeps a table card selection rank in its render model.', () => {
+        const wrapper = mount(PixiGamePrototype, {
+            props: { scene: liveScene() },
+        });
+        const model = wrapper.vm.sceneCardModel({
+            id: 'ordered-card',
+            name: 'Ordered card',
+            selectionOrder: 3,
+        }, 'hand');
+        expect(model.selectionOrder).toBe(3);
+        wrapper.unmount();
     });
 
     test('shows separate auto-pass and pass-priority controls.', async () => {
