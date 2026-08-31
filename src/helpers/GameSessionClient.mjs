@@ -1166,6 +1166,19 @@ export function projectGameSessionView(view, options = {}) {
             .map(modifier => modifier.playerId)
             .filter(Boolean),
     );
+    const knownHandCardIdsByPlayer = new Map();
+    for (const modifier of state.ruleModifiers ?? []) {
+        if (modifier?.kind !== 'knownHandCards' || !modifier.playerId) {
+            continue;
+        }
+        const known = knownHandCardIdsByPlayer.get(modifier.playerId) ?? new Set();
+        for (const instanceId of modifier.cardInstanceIds ?? []) {
+            if (instanceId) {
+                known.add(String(instanceId));
+            }
+        }
+        knownHandCardIdsByPlayer.set(modifier.playerId, known);
+    }
     const linkedExileSourceByCardId = new Map(
         (state.ruleModifiers ?? []).flatMap(modifier => {
             if (
@@ -1180,7 +1193,12 @@ export function projectGameSessionView(view, options = {}) {
     );
     const players = (state.players ?? []).map((player, playerIndex) => {
         const hand = (player.hand ?? []).map(instance => {
-            return displayCard(instance, cardCatalog, actions, 'hand');
+            return {
+                ...displayCard(instance, cardCatalog, actions, 'hand'),
+                knownToViewer: Boolean(instance.flags?.knownToViewer) ||
+                    revealedHandPlayerIds.has(player.id) ||
+                    knownHandCardIdsByPlayer.get(player.id)?.has(instance.instanceId) === true,
+            };
         });
         const exile = zoneView(player.exile ?? [], cardCatalog, actions, 'exile');
         exile.cards = exile.cards.map(card => {

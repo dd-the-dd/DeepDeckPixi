@@ -222,6 +222,54 @@ describe('GameSessionClient', () => {
         expect(projected.players[1].zones.hand[0].id).toBe('player-2:card:0');
     });
 
+    test('Feature: individually known opponent hand cards remain marked for the viewer.', () => {
+        const base = sessionView();
+        const knownCard = {
+            ...base.state.players[0].hand[0],
+            controller: 'player-2',
+            instanceId: 'player-2:known-card',
+            owner: 'player-2',
+        };
+        const unknownCard = {
+            ...base.state.players[0].hand[0],
+            controller: 'player-2',
+            instanceId: 'hidden:hand:player-2:1',
+            owner: 'player-2',
+            definition: {
+                id: 'hidden-card',
+                manaCost: '',
+                name: 'Hidden card',
+                rules: [],
+                typeLine: '',
+            },
+        };
+        const projected = projectGameSessionView(sessionView({
+            state: {
+                ...base.state,
+                players: [
+                    base.state.players[0],
+                    {
+                        ...base.state.players[0],
+                        hand: [knownCard, unknownCard],
+                        id: 'player-2',
+                        name: 'Opponent',
+                    },
+                ],
+                ruleModifiers: [{
+                    cardInstanceIds: ['player-2:known-card'],
+                    kind: 'knownHandCards',
+                    playerId: 'player-2',
+                }],
+            },
+        }), {
+            playerRoles: ['human', 'ai-random'],
+        });
+
+        expect(projected.players[1].zones.hand[0].knownToViewer).toBe(true);
+        expect(projected.players[1].zones.hand[1].knownToViewer).toBe(false);
+        expect(projected.players[1].zones.handRevealed).toBe(false);
+    });
+
     test('Feature: Rust option choices that name board objects become visual targets.', () => {
         const base = sessionView();
         const permanent = {

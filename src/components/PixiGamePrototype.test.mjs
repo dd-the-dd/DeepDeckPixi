@@ -23,7 +23,7 @@ function liveScene(controls = {}) {
 }
 
 describe('Pixi game controls', () => {
-    test('opens every known graveyard or exile card in a scrollable inspector', async () => {
+    test('opens a graveyard or exile from its table pile and toggles it closed', async () => {
         const scene = liveScene();
         scene.players = [{
             battlefield: [],
@@ -55,14 +55,16 @@ describe('Pixi game controls', () => {
         }];
         const wrapper = mount(PixiGamePrototype, { props: { scene } });
 
-        expect(wrapper.findAll('.pixi-public-zone-dock button')).toHaveLength(2);
-        await wrapper.findAll('.pixi-public-zone-dock button')[0].trigger('click');
+        expect(wrapper.find('.pixi-public-zone-dock').exists()).toBe(false);
+        await wrapper.vm.openKnownZone(scene.players[0], scene.players[0].zones[0]);
         expect(wrapper.get('.pixi-zone-inspector').attributes('role')).toBe('dialog');
+        expect(wrapper.get('.pixi-zone-inspector').classes()).toContain('pixi-zone-inspector-local');
         expect(wrapper.findAll('.pixi-zone-inspector-grid > button')).toHaveLength(2);
         expect(wrapper.get('.pixi-zone-inspector').text()).toContain('First card');
-        await wrapper.get('.pixi-zone-inspector > header button').trigger('click');
+        await wrapper.vm.openKnownZone(scene.players[0], scene.players[0].zones[0]);
+        expect(wrapper.find('.pixi-zone-inspector').exists()).toBe(false);
 
-        await wrapper.findAll('.pixi-public-zone-dock button')[1].trigger('click');
+        await wrapper.vm.openKnownZone(scene.players[0], scene.players[0].zones[1]);
         expect(wrapper.get('.pixi-zone-inspector').text()).toContain('Exil lié');
         await wrapper.get('.pixi-zone-inspector-grid > button').trigger('click');
         expect(wrapper.emitted('card-click')[0][0]).toEqual(expect.objectContaining({

@@ -95,3 +95,38 @@ export function pixiPrivateZonePosition({
         y: anchorY + (local ? 1 : -1) * 104,
     };
 }
+
+export function pixiHandScale({ cardCount = 0, local = false, width = 1280 }) {
+    const roomyScale = local
+        ? width >= 1200 ? 1.22 : width >= 900 ? 1.14 : width >= 700 ? 1.04 : 0.92
+        : width >= 1200 ? 0.62 : width >= 900 ? 0.56 : 0.48;
+    const densityPenalty = cardCount <= 7
+        ? 0
+        : cardCount <= 10
+            ? local ? 0.08 : 0.05
+            : cardCount <= 14
+                ? local ? 0.18 : 0.1
+                : local ? 0.3 : 0.16;
+    return Math.max(local ? 0.82 : 0.4, roomyScale - densityPenalty);
+}
+
+export function pixiPermanentScale({ largestGroup = 0, playerCount = 2, width = 1280 }) {
+    const roomyScale = playerCount <= 2
+        ? width >= 1200 ? 1.08 : width >= 900 ? 0.98 : width >= 700 ? 0.88 : 0.76
+        : width >= 1200 ? 0.92 : width >= 900 ? 0.84 : width >= 700 ? 0.76 : 0.68;
+    const densityPenalty = largestGroup <= 4
+        ? 0
+        : largestGroup <= 6
+            ? 0.1
+            : largestGroup <= 9
+                ? 0.22
+                : 0.34;
+    return Math.max(playerCount <= 2 ? 0.58 : 0.52, roomyScale - densityPenalty);
+}
+
+export function pixiToggledZoneKey(current, playerId, zoneId) {
+    const next = { playerId: String(playerId), zoneId: String(zoneId) };
+    return current?.playerId === next.playerId && current?.zoneId === next.zoneId
+        ? null
+        : next;
+}
