@@ -4,8 +4,11 @@ import {
     PIXI_CARD_OUTLINE_COLORS,
     pixiCardOutlineColor,
     pixiCombatLinks,
+    pixiHandScale,
     pixiHandCards,
+    pixiPermanentScale,
     pixiPrivateZonePosition,
+    pixiToggledZoneKey,
 } from './PixiGameLayout.mjs';
 
 test('Pixi card outlines reflect cast permissions and their source zone', () => {
@@ -68,6 +71,29 @@ test('private zones stay close to their owner and move toward the outside edge',
     expect(leftOpponent.y).toBeLessThan(160);
     expect(rightOpponent.y).toBeLessThan(160);
     expect(local.y).toBeGreaterThan(650);
+});
+
+test('clicking the same public-zone pile toggles its inspector closed', () => {
+    const graveyard = pixiToggledZoneKey(null, 'player-1', 'graveyard');
+    expect(graveyard).toEqual({ playerId: 'player-1', zoneId: 'graveyard' });
+    expect(pixiToggledZoneKey(graveyard, 'player-1', 'graveyard')).toBeNull();
+    expect(pixiToggledZoneKey(graveyard, 'player-1', 'exile')).toEqual({
+        playerId: 'player-1',
+        zoneId: 'exile',
+    });
+});
+
+test('card scales use empty space and only shrink when a zone gets crowded', () => {
+    expect(pixiHandScale({ cardCount: 7, local: true, width: 1440 })).toBeGreaterThan(1.1);
+    expect(pixiHandScale({ cardCount: 16, local: true, width: 1440 })).toBeLessThan(
+        pixiHandScale({ cardCount: 7, local: true, width: 1440 }),
+    );
+    expect(pixiPermanentScale({ largestGroup: 3, playerCount: 2, width: 1440 }))
+        .toBeGreaterThan(1);
+    expect(pixiPermanentScale({ largestGroup: 10, playerCount: 2, width: 1440 }))
+        .toBeLessThan(pixiPermanentScale({ largestGroup: 3, playerCount: 2, width: 1440 }));
+    expect(pixiPermanentScale({ largestGroup: 3, playerCount: 4, width: 1440 }))
+        .toBeGreaterThan(0.85);
 });
 
 test('Pixi reads the projected hand array without mixing in other playable zones', () => {

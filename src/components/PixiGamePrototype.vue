@@ -1,7 +1,10 @@
 <template>
   <section
     class="pixi-game-prototype"
-    :class="{ 'pixi-game-live': isPlay, 'pixi-game-mobile-focus': mobileFocusEnabled }"
+    :class="{
+      'pixi-game-live': isPlay,
+      'pixi-game-mobile-focus': mobileFocusEnabled,
+    }"
     :data-mode="mode"
     aria-label="Client de jeu PixiJS"
     @touchstart.passive="beginMobilePlayerSwipe"
@@ -94,22 +97,6 @@
     </button>
 
     <nav
-      v-if="knownZoneEntries.length"
-      class="pixi-public-zone-dock"
-      aria-label="Zones publiques connues"
-    >
-      <button
-        v-for="entry in knownZoneEntries"
-        :key="`${entry.player.id}:${entry.zone.id}`"
-        type="button"
-        @click="openKnownZone(entry.player, entry.zone)"
-      >
-        <span>{{ entry.player.name }}</span>
-        <strong>{{ knownZoneLabel(entry.zone.id) }} {{ entry.zone.count }}</strong>
-      </button>
-    </nav>
-
-    <nav
       v-if="mobileFocusEnabled"
       class="pixi-mobile-player-navigator"
       aria-label="Changer le joueur observé"
@@ -138,6 +125,9 @@
       v-if="inspectedZone"
       ref="zoneInspectorElement"
       class="pixi-zone-inspector"
+      :class="inspectedZone.player.local
+        ? 'pixi-zone-inspector-local'
+        : 'pixi-zone-inspector-opponent'"
       role="dialog"
       aria-modal="false"
       :aria-label="`${knownZoneLabel(inspectedZone.zone.id)} de ${inspectedZone.player.name}`"
@@ -295,7 +285,10 @@ import {
 } from 'pixi.js';
 import {
     pixiCardOutlineColor,
+    pixiHandScale,
+    pixiPermanentScale,
     pixiPrivateZonePosition,
+    pixiToggledZoneKey,
 } from '../helpers/PixiGameLayout.mjs';
 
 const props = defineProps({
@@ -402,14 +395,6 @@ const displayPlayers = computed(() => {
 const summarizedPlayers = computed(() => {
     const visibleIds = new Set(displayPlayers.value.map(player => player.id));
     return allPlayers.value.filter(player => !visibleIds.has(player.id));
-});
-const knownZoneEntries = computed(() => {
-    return displayPlayers.value.flatMap(player => {
-        return (player.zones ?? [])
-            .filter(zone => ['graveyard', 'exile'].includes(zone.id))
-            .filter(zone => Number(zone.count ?? zone.cards?.length ?? 0) > 0)
-            .map(zone => ({ player, zone }));
-    });
 });
 const inspectedZone = computed(() => {
     if (!inspectedZoneKey.value) {
@@ -952,7 +937,13 @@ function createCardView(model, options = {}) {
                 view.hoveredStatsBadge.scale.set(1 / Math.max(0.5, view.restScale ?? 1));
             }
             if (view.sceneZone === 'hand' && view.scenePlayer?.local) {
-                targetView(view, view.restX, app.screen.height - cardHeight / 2 - 24, 0, 1.12);
+                targetView(
+                    view,
+                    view.restX,
+                    app.screen.height - cardHeight / 2 - 24,
+                    0,
+                    Math.max(1.18, (view.restScale ?? 1) * 1.08),
+                );
             } else if (view.sceneZone !== 'battlefield') {
                 targetView(view, view.restX, view.restY - 34, 0, 0.86);
             } else {
@@ -1452,11 +1443,15 @@ function layoutRow(views, centerX, centerY, maxWidth, scale = 0.78) {
 
 function layoutHand(width, height) {
     const count = handViews.length;
+    const scale = pixiHandScale({ cardCount: count, local: true, width });
     const minimumWidth = width < 480 ? 80 : (width < 640 ? 160 : 240);
-    const available = Math.min(790, Math.max(minimumWidth, width - 640));
-    const spacing = count <= 1 ? 0 : Math.min(88, available / (count - 1));
+    const available = Math.min(980, Math.max(minimumWidth, width - 520));
+    const spacing = count <= 1
+        ? 0
+        : Math.min(cardWidth * scale * 0.74, available / (count - 1));
     const startX = width / 2 - ((count - 1) * spacing) / 2;
-    const restY = height + cardHeight / 2 - 76;
+    const visibleHeight = Math.min(124, cardHeight * scale * 0.64);
+    const restY = height + cardHeight * scale / 2 - visibleHeight;
     handViews.forEach((view, index) => {
         const centerOffset = index - (count - 1) / 2;
         const rotation = centerOffset * 0.025;
@@ -1464,8 +1459,9 @@ function layoutHand(width, height) {
         view.restX = startX + index * spacing;
         view.restY = restY + Math.abs(centerOffset) * 2.5;
         view.restRotation = rotation;
+        view.restScale = scale;
         if (!view.hovered) {
-            targetView(view, view.restX, view.restY, rotation, 1);
+            targetView(view, view.restX, view.restY, rotation, scale);
         }
     });
 }
@@ -1536,13 +1532,20 @@ function layoutLiveHand(views, player, anchor, width, height) {
         handViews = views;
         layoutHand(width, height);
         views.forEach((view, index) => {
-            view.restScale = 1;
+            view.restScale = pixiHandScale({
+                cardCount: views.length,
+                local: true,
+                width,
+            });
             view.restZIndex = index;
         });
         return;
     }
-    const scale = views.length > 9 ? 0.36 : 0.43;
-    const spacing = Math.min(27, Math.max(11, 180 / Math.max(1, views.length)));
+    const scale = pixiHandScale({ cardCount: views.length, local: false, width });
+    const spacing = Math.min(
+        cardWidth * scale * 0.55,
+        Math.max(14, 240 / Math.max(1, views.length)),
+    );
     const startX = anchor.x - ((views.length - 1) * spacing) / 2;
     const handY = Math.max(62, anchor.y - cardHeight * 0.56);
     views.forEach((view, index) => {
@@ -1552,7 +1555,7 @@ function layoutLiveHand(views, player, anchor, width, height) {
 }
 
 function layoutLivePlayerBoard(entry, anchor, width, playerCount) {
-    const regionWidth = playerCount > 2 ? width * 0.27 : width * 0.72;
+    const regionWidth = playerCount > 2 ? width * 0.3 : width * 0.86;
     const unattached = entry.permanentViews.filter(view => !view.attachedTo);
     const groups = {
         creature: unattached.filter(view => view.cardKind === 'creature'),
@@ -1560,12 +1563,7 @@ function layoutLivePlayerBoard(entry, anchor, width, playerCount) {
         other: unattached.filter(view => !['creature', 'land'].includes(view.cardKind)),
     };
     const largestGroup = Math.max(0, ...Object.values(groups).map(group => group.length));
-    const roomyScale = playerCount > 2 ? 0.72 : (width < 1000 ? 0.66 : 0.78);
-    const scale = largestGroup <= 3
-        ? roomyScale
-        : largestGroup <= 6
-            ? Math.max(0.58, roomyScale - 0.1)
-            : 0.5;
+    const scale = pixiPermanentScale({ largestGroup, playerCount, width });
     const groupWidth = regionWidth / 3;
     const verticalDirection = entry.player.local ? 1 : -1;
     layoutLiveGroup(
@@ -1614,7 +1612,7 @@ function layoutLivePlayerBoard(entry, anchor, width, playerCount) {
         privateZonePosition.x,
         privateZonePosition.y,
         Math.min(regionWidth * 0.82, 210),
-        0.52,
+        Math.min(0.66, scale * 0.7),
         150,
         view => view.zoneId === 'exile' ? Math.PI / 2 : 0,
     );
@@ -1944,7 +1942,15 @@ async function openKnownZone(player, zone) {
     if (!player || !zone || !['graveyard', 'exile'].includes(zone.id)) {
         return;
     }
-    inspectedZoneKey.value = { playerId: player.id, zoneId: zone.id };
+    inspectedZoneKey.value = pixiToggledZoneKey(
+        inspectedZoneKey.value,
+        player.id,
+        zone.id,
+    );
+    if (!inspectedZoneKey.value) {
+        emit('card-leave');
+        return;
+    }
     await nextTick();
     zoneInspectorElement.value?.focus();
 }
@@ -2801,7 +2807,7 @@ onBeforeUnmount(() => {
     right: 0.55rem;
     top: 50%;
     transform: translateY(-50%);
-    width: clamp(8rem, 11vw, 10.5rem);
+    width: clamp(10.5rem, 14vw, 13.5rem);
 }
 
 .pixi-panel-title {
@@ -2827,7 +2833,7 @@ onBeforeUnmount(() => {
 }
 
 .pixi-stack-card-fan {
-    height: calc(14.6rem + (var(--stack-count) - 1) * 1.7rem);
+    height: calc(18rem + (var(--stack-count) - 1) * 2rem);
     margin-top: 0.35rem;
     position: relative;
 }
@@ -2839,13 +2845,13 @@ onBeforeUnmount(() => {
     border-radius: 0.48rem;
     box-shadow: 0 0.55rem 1.25rem rgb(16 24 40 / 22%);
     display: block;
-    height: 14.6rem;
+    height: 18rem;
     left: 0;
     margin: 0;
     overflow: hidden;
     padding: 0;
     position: absolute;
-    top: calc(var(--stack-index) * 1.7rem);
+    top: calc(var(--stack-index) * 2rem);
     transform: none;
     width: 100%;
     text-align: left;
@@ -2857,10 +2863,10 @@ onBeforeUnmount(() => {
 .pixi-stack-item > strong {
     border-bottom: 1px solid #d0d5dd;
     display: block;
-    font-size: 0.63rem;
-    height: 1.7rem;
+    font-size: 0.72rem;
+    height: 2rem;
     overflow: hidden;
-    padding: 0.3rem 0.36rem;
+    padding: 0.42rem 0.46rem;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -2869,7 +2875,7 @@ onBeforeUnmount(() => {
     background:
         radial-gradient(circle at 65% 35%, rgb(255 255 255 / 42%), transparent 28%),
         linear-gradient(145deg, #173f72, #6ab0d8 58%, #d9b66a);
-    height: 7.6rem;
+    height: 10.4rem;
     object-fit: cover;
     width: 100%;
 }
@@ -2934,46 +2940,13 @@ onBeforeUnmount(() => {
     .pixi-game-mode { display: none; }
     .pixi-game-topbar { grid-template-columns: 1fr auto; }
     .pixi-player-identity { display: none; }
-    .pixi-stack-panel { width: 7rem; }
-    .pixi-stack-art { height: 6.2rem; }
-    .pixi-stack-item { height: 12rem; }
+    .pixi-stack-panel { width: clamp(8rem, 20vw, 10rem); }
+    .pixi-stack-card-fan { height: calc(14rem + (var(--stack-count) - 1) * 1.5rem); }
+    .pixi-stack-art { height: 7.6rem; }
+    .pixi-stack-item { height: 14rem; top: calc(var(--stack-index) * 1.5rem); }
     .pixi-game-frame-rate { display: none; }
     .pixi-game-controls { max-width: 10rem; }
 }
-
-.pixi-public-zone-dock {
-    display: grid;
-    gap: 0.3rem;
-    left: 0.55rem;
-    max-width: 8.5rem;
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 18;
-}
-
-.pixi-public-zone-dock button {
-    background: rgb(255 253 251 / 96%);
-    border: 1px solid #98a2b3;
-    border-radius: 0.38rem;
-    box-shadow: 0 0.25rem 0.75rem rgb(16 24 40 / 12%);
-    color: #344054;
-    cursor: pointer;
-    display: grid;
-    gap: 0.08rem;
-    padding: 0.32rem 0.42rem;
-    text-align: left;
-}
-
-.pixi-public-zone-dock span {
-    font-size: 0.52rem;
-    max-width: 7.4rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.pixi-public-zone-dock strong { font-size: 0.61rem; }
 
 .pixi-zone-inspector {
     background: rgb(255 253 251 / 98%);
@@ -2982,15 +2955,17 @@ onBeforeUnmount(() => {
     box-shadow: 0 1.2rem 3.5rem rgb(16 24 40 / 28%);
     color: #101828;
     left: 50%;
-    max-height: min(78vh, 44rem);
+    max-height: min(42vh, 26rem);
     max-width: min(52rem, calc(100vw - 2rem));
     overflow: hidden;
     position: absolute;
-    top: 50%;
-    transform: translate(-50%, -50%);
+    transform: translateX(-50%);
     width: 100%;
     z-index: 35;
 }
+
+.pixi-zone-inspector-local { top: 4rem; }
+.pixi-zone-inspector-opponent { bottom: 4.5rem; }
 
 .pixi-zone-inspector > header {
     align-items: center;
@@ -3017,7 +2992,7 @@ onBeforeUnmount(() => {
     display: grid;
     gap: 0.65rem;
     grid-template-columns: repeat(auto-fill, minmax(6.2rem, 1fr));
-    max-height: calc(min(78vh, 44rem) - 4rem);
+    max-height: calc(min(42vh, 26rem) - 4rem);
     overflow: auto;
     padding: 0.75rem;
 }
@@ -3118,19 +3093,10 @@ onBeforeUnmount(() => {
     .pixi-mobile-player-summaries span { font-size: 0.48rem; }
     .pixi-mobile-player-summaries strong { font-size: 0.55rem; }
 
-    .pixi-public-zone-dock {
-        left: 0.35rem;
-        max-width: 6.5rem;
-        top: 9.2rem;
-        transform: none;
-    }
-
-    .pixi-public-zone-dock button { padding: 0.24rem 0.32rem; }
-    .pixi-public-zone-dock span { display: none; }
-    .pixi-zone-inspector { max-height: calc(100dvh - 7rem); max-width: calc(100vw - 1rem); }
+    .pixi-zone-inspector { max-height: min(44vh, 24rem); max-width: calc(100vw - 1rem); }
     .pixi-zone-inspector-grid {
         grid-template-columns: repeat(3, minmax(0, 1fr));
-        max-height: calc(100dvh - 11rem);
+        max-height: calc(min(44vh, 24rem) - 4rem);
     }
 }
 </style>
