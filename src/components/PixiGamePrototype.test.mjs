@@ -146,6 +146,19 @@ describe('Pixi game controls', () => {
         wrapper.unmount();
     });
 
+    test('keeps the private-knowledge eye marker in the render model.', () => {
+        const wrapper = mount(PixiGamePrototype, {
+            props: { scene: liveScene() },
+        });
+        const model = wrapper.vm.sceneCardModel({
+            id: 'known-card',
+            knownToViewer: true,
+            name: 'Known card',
+        }, 'hand');
+        expect(model.knownToViewer).toBe(true);
+        wrapper.unmount();
+    });
+
     test('shows separate auto-pass and pass-priority controls.', async () => {
         const wrapper = mount(PixiGamePrototype, {
             props: { scene: liveScene() },

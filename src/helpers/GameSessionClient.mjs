@@ -1090,6 +1090,27 @@ function resolutionCardChoice(state, decision, cardCatalog) {
     };
 }
 
+function resolutionCardNameChoice(decision) {
+    const choice = decision?.choice;
+    if (
+        !['resolutionChoice', 'replacementChoice'].includes(decision?.kind) ||
+        choice?.kind !== 'cardNameSelection'
+    ) {
+        return null;
+    }
+    const action = (decision.options ?? []).find(option => option.kind === 'chooseResolution') ??
+        decision.options?.[0];
+    if (!action) {
+        return null;
+    }
+    return {
+        actionId: action.id,
+        decisionId: choice.decisionId,
+        prompt: choice.prompt ?? 'Choose a card name.',
+        suggestions: Array.isArray(choice.suggestions) ? [...choice.suggestions] : [],
+    };
+}
+
 function resolutionBoardTargetChoice(state, decision) {
     const choice = decision?.choice;
     if (decision?.kind !== 'resolutionChoice' || choice?.kind !== 'optionSelection') {
@@ -1125,6 +1146,72 @@ function resolutionBoardTargetChoice(state, decision) {
         actions,
         prompt: choice.prompt ?? 'Choose a player or permanent.',
         targetKey,
+    };
+}
+
+function resolutionDungeonChoice(state, decision, cardCatalog) {
+    const choice = decision?.choice;
+    const prompt = String(choice?.prompt ?? '');
+    if (
+        decision?.kind !== 'resolutionChoice' ||
+        choice?.kind !== 'optionSelection' ||
+        !/dungeon|room/iu.test(prompt)
+    ) {
+        return null;
+    }
+    const gamePieces = (state.gamePieces ?? []).filter(piece => {
+        return /(?:^|\W)dungeon(?:\W|$)/iu.test(String(piece?.typeLine ?? ''));
+    });
+    const position = (state.ruleModifiers ?? []).find(modifier => {
+        return modifier?.kind === 'dungeonPosition' &&
+            modifier.playerId === decision.playerId;
+    });
+    const currentDungeon = position
+        ? gamePieces.find(piece => piece.id === position.dungeonId) ?? null
+        : null;
+    const options = (decision.options ?? []).flatMap(action => {
+        const selected = action.decisions?.[choice.decisionId];
+        if (action.kind !== 'chooseResolution' || !Array.isArray(selected) || selected.length !== 1) {
+            return [];
+        }
+        const value = String(selected[0]);
+        const dungeon = currentDungeon ?? gamePieces.find(piece => piece.name === value) ?? null;
+        if (!dungeon) {
+            return [];
+        }
+        return [{
+            actionId: action.id,
+            dungeonId: dungeon.id,
+            label: value,
+            value,
+        }];
+    });
+    if (options.length === 0 || options.length !== (decision.options ?? []).length) {
+        return null;
+    }
+    const dungeonIds = [...new Set(options.map(option => option.dungeonId))];
+    const cards = dungeonIds.flatMap(dungeonId => {
+        const dungeon = gamePieces.find(piece => piece.id === dungeonId);
+        if (!dungeon) {
+            return [];
+        }
+        return [displayCard({
+            controller: decision.playerId,
+            definition: dungeon,
+            flags: {},
+            instanceId: `dungeon:${dungeon.id}`,
+            owner: decision.playerId,
+            tapped: false,
+        }, cardCatalog, [], 'dungeon')];
+    });
+    return {
+        cards,
+        currentRoom: position?.room ?? null,
+        kind: currentDungeon ? 'room' : 'dungeon',
+        options,
+        prompt: prompt || (currentDungeon
+            ? 'Choose the next Dungeon room.'
+            : 'Choose a Dungeon to enter.'),
     };
 }
 
@@ -1215,6 +1302,13 @@ export function projectGameSessionView(view, options = {}) {
         });
         exile.top = exile.cards.at(-1) ?? null;
         const graveyard = zoneView(player.graveyard ?? [], cardCatalog, actions, 'graveyard');
+        const libraryTopInstance = (player.library ?? []).at(-1) ?? null;
+        const libraryTop = libraryTopInstance?.flags?.knownToViewer
+            ? {
+                ...displayCard(libraryTopInstance, cardCatalog, [], 'library'),
+                knownToViewer: true,
+            }
+            : null;
         const commandZone = zoneView(
             player.commandZone ?? [],
             cardCatalog,
@@ -1252,6 +1346,7 @@ export function projectGameSessionView(view, options = {}) {
                 handRevealed: revealedHandPlayerIds.has(player.id),
                 landPlaysAvailable: Number(player.landPlaysRemaining ?? 0),
                 libraryCount: player.library?.length ?? 0,
+                libraryTop,
                 manaPool: manaPoolView(player.manaPool),
                 maxHandSize: Number(player.maxHandSize ?? 7),
                 playableHand: [...commandZone.cards, ...hand, ...permissionCards],
@@ -1281,6 +1376,8 @@ export function projectGameSessionView(view, options = {}) {
     const phase = phaseFromEngineStep(state.step, decision?.kind);
     const resolutionChoice = resolutionCardChoice(state, decision, cardCatalog);
     const resolutionTargetChoice = resolutionBoardTargetChoice(state, decision);
+    const dungeonChoice = resolutionDungeonChoice(state, decision, cardCatalog);
+    const cardNameChoice = resolutionCardNameChoice(decision);
     const numberChoice = decision?.choice?.kind === 'numberSelection'
         ? {
             decisionId: decision.choice.decisionId,
@@ -1294,13 +1391,45 @@ export function projectGameSessionView(view, options = {}) {
     const decisionSourceCard = decisionSourceInstance
         ? displayCard(decisionSourceInstance, cardCatalog, [])
         : null;
+    const hasStructuredResolutionChoice = Boolean(
+        resolutionChoice || resolutionTargetChoice || dungeonChoice || cardNameChoice || numberChoice,
+    );
+    const hasAbstractResolutionChoice = decision?.kind === 'resolutionChoice' &&
+        !hasStructuredResolutionChoice;
+    const gameNotes = (state.ruleModifiers ?? []).flatMap(modifier => {
+        if (modifier?.kind !== 'observedCardsNote') {
+            return [];
+        }
+        const observedPlayer = players.find(player => player.key === modifier.playerId);
+        return [{
+            orderKnown: Boolean(modifier.orderKnown),
+            playerId: modifier.playerId,
+            playerName: observedPlayer?.name ?? modifier.playerId ?? 'Player',
+            sourceName: modifier.sourceName ?? 'Search effect',
+            turnNumber: Number(modifier.turnNumber ?? 0),
+            zones: (modifier.zones ?? []).map(zone => ({
+                cards: (zone.cards ?? []).map(card => ({
+                    count: Number(card.count ?? 0),
+                    name: card.name ?? 'Unknown card',
+                })),
+                zone: zone.zone,
+            })),
+        }];
+    });
 
     return {
         actions,
+        cardNameChoice,
         combat: state.combat ?? { attackers: [], blockers: [] },
         decision,
         decisionSourceCard,
-        directActions: actions.filter(action => !gameSessionActionCardId(action)),
+        dungeonChoice,
+        gameNotes,
+        directActions: actions.filter(action => {
+            return hasAbstractResolutionChoice ||
+                decision?.kind === 'replacementChoice' ||
+                !gameSessionActionCardId(action);
+        }),
         numberChoice,
         passAction: actions.find(action => action.kind === 'passPriority') ?? null,
         players,

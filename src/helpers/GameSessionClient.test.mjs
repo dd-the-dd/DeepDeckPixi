@@ -92,6 +92,37 @@ function sessionView(overrides = {}) {
 }
 
 describe('GameSessionClient', () => {
+    test('projects card-name choices as a structured free-text decision', () => {
+        const action = {
+            decisions: { namedCard: ['Cabal Therapy'] },
+            id: 'resolve:stack:1:namedCard:name:0',
+            kind: 'chooseResolution',
+            label: 'Choose Cabal Therapy',
+            playerId: 'player-1',
+        };
+        const projected = projectGameSessionView(sessionView({
+            decision: {
+                choice: {
+                    decisionId: 'namedCard',
+                    kind: 'cardNameSelection',
+                    prompt: 'Choose a nonland card name.',
+                    suggestions: ['Cabal Therapy'],
+                },
+                id: 'resolution:stack:1:namedCard',
+                kind: 'resolutionChoice',
+                options: [action],
+                playerId: 'player-1',
+            },
+        }));
+
+        expect(projected.cardNameChoice).toEqual({
+            actionId: action.id,
+            decisionId: 'namedCard',
+            prompt: 'Choose a nonland card name.',
+            suggestions: ['Cabal Therapy'],
+        });
+    });
+
     test('Feature: Linked exile stays associated with its generic Rust source', () => {
         const base = sessionView();
         const source = {
@@ -270,6 +301,29 @@ describe('GameSessionClient', () => {
         expect(projected.players[1].zones.handRevealed).toBe(false);
     });
 
+    test('Feature: a privately known top library card is projected face up.', () => {
+        const base = sessionView();
+        const knownTop = {
+            ...base.state.players[0].hand[0],
+            flags: { knownToViewer: true },
+            instanceId: 'player-2:known-library-top',
+        };
+        const projected = projectGameSessionView(sessionView({
+            state: {
+                ...base.state,
+                players: [{
+                    ...base.state.players[0],
+                    library: [knownTop],
+                }],
+            },
+        }));
+
+        expect(projected.players[0].zones.libraryTop).toEqual(expect.objectContaining({
+            id: 'player-2:known-library-top',
+            knownToViewer: true,
+        }));
+    });
+
     test('Feature: Rust option choices that name board objects become visual targets.', () => {
         const base = sessionView();
         const permanent = {
@@ -340,6 +394,58 @@ describe('GameSessionClient', () => {
                     },
                 },
             }),
+        ]);
+    });
+
+    test('Feature: Abstract resolution options remain directly actionable when the source is on the stack.', () => {
+        const base = sessionView();
+        const sourceCard = {
+            ...base.state.players[0].hand[0],
+            definition: {
+                ...base.state.players[0].hand[0].definition,
+                id: 'ponder',
+                name: 'Ponder',
+            },
+            instanceId: 'player-1:ponder',
+        };
+        const decisionId = 'chooseOption:stack:ponder:1';
+        const action = (id, selected) => ({
+            cardInstanceId: sourceCard.instanceId,
+            decisions: { [decisionId]: [selected] },
+            id,
+            kind: 'chooseResolution',
+            label: `Choose ${selected}`,
+            playerId: 'player-1',
+        });
+        const projected = projectGameSessionView(sessionView({
+            decision: {
+                choice: {
+                    decisionId,
+                    kind: 'optionSelection',
+                    options: ['Keep the current order', 'Shuffle the library'],
+                    prompt: 'Shuffle the library?',
+                },
+                id: `resolution:stack:ponder:${decisionId}`,
+                kind: 'resolutionChoice',
+                options: [
+                    action('resolve:ponder:keep', 'Keep the current order'),
+                    action('resolve:ponder:shuffle', 'Shuffle the library'),
+                ],
+                playerId: 'player-1',
+                sourceCard,
+                sourceCardInstanceId: sourceCard.instanceId,
+            },
+            state: {
+                ...base.state,
+                stack: [{ card: sourceCard, controller: 'player-1', id: 'stack:ponder' }],
+            },
+        }));
+
+        expect(projected.resolutionCardChoice).toBeNull();
+        expect(projected.resolutionTargetChoice).toBeNull();
+        expect(projected.directActions.map(action => action.id)).toEqual([
+            'resolve:ponder:keep',
+            'resolve:ponder:shuffle',
         ]);
     });
 
@@ -2164,5 +2270,180 @@ describe('GameSessionClient', () => {
             }],
             prompt: 'Order the remaining cards for the bottom of the library, bottommost first.',
         });
+    });
+
+    test('Bug: An as-enters choice remains in the decision panel before its source is on the battlefield.', () => {
+        const cavern = {
+            controller: 'player-1',
+            definition: {
+                id: 'cavern-of-souls',
+                manaCost: '',
+                name: 'Cavern of Souls',
+                rules: [],
+                typeLine: 'Land',
+            },
+            instanceId: 'player-1:cavern',
+            owner: 'player-1',
+            tapped: false,
+        };
+        const view = sessionView({
+            decision: {
+                id: 'replacement:player-1:cavern:chosenCreatureType',
+                kind: 'replacementChoice',
+                options: ['Eldrazi', 'Human'].map(creatureType => ({
+                    cardInstanceId: cavern.instanceId,
+                    decisions: { chosenCreatureType: creatureType },
+                    id: `choose:chosenCreatureType:${creatureType.toLowerCase()}`,
+                    kind: 'chooseResolution',
+                    label: `Choose ${creatureType}`,
+                    playerId: 'player-1',
+                })),
+                playerId: 'player-1',
+                sourceCard: cavern,
+                sourceCardInstanceId: cavern.instanceId,
+            },
+        });
+
+        expect(projectGameSessionView(view).directActions.map(action => action.label)).toEqual([
+            'Choose Eldrazi',
+            'Choose Human',
+        ]);
+    });
+
+    test('Feature: Dungeon and room choices expose their legal Dungeon card art.', () => {
+        const base = sessionView();
+        const tomb = {
+            id: 'tomb-of-annihilation',
+            isGamePiece: true,
+            manaCost: '',
+            name: 'Tomb of Annihilation',
+            rules: [],
+            typeLine: 'Dungeon',
+        };
+        const mine = {
+            id: 'lost-mine',
+            isGamePiece: true,
+            manaCost: '',
+            name: 'Lost Mine of Phandelver',
+            rules: [],
+            typeLine: 'Dungeon',
+        };
+        const dungeonDecision = {
+            choice: {
+                decisionId: 'resolutionOption',
+                kind: 'optionSelection',
+                options: [tomb.name, mine.name],
+                prompt: 'Choose a Dungeon to enter.',
+            },
+            id: 'resolution:acererak:dungeon',
+            kind: 'resolutionChoice',
+            options: [tomb, mine].map(dungeon => ({
+                decisions: { resolutionOption: [dungeon.name] },
+                id: `choose:${dungeon.id}`,
+                kind: 'chooseResolution',
+                label: `Choose ${dungeon.name}`,
+                playerId: 'player-1',
+            })),
+            playerId: 'player-1',
+        };
+        const cardCatalog = {
+            'lost-mine': { imageUrl: 'lost-mine.jpg' },
+            'tomb-of-annihilation': { imageUrl: 'tomb.jpg' },
+        };
+        const projected = projectGameSessionView(sessionView({
+            decision: dungeonDecision,
+            state: { ...base.state, gamePieces: [tomb, mine] },
+        }), { cardCatalog, playerRoles: ['human'] });
+
+        expect(projected.dungeonChoice).toEqual(expect.objectContaining({
+            kind: 'dungeon',
+            options: [
+                expect.objectContaining({ actionId: 'choose:tomb-of-annihilation' }),
+                expect.objectContaining({ actionId: 'choose:lost-mine' }),
+            ],
+        }));
+        expect(projected.dungeonChoice.cards).toEqual([
+            expect.objectContaining({ imageUrl: 'tomb.jpg', name: tomb.name }),
+            expect.objectContaining({ imageUrl: 'lost-mine.jpg', name: mine.name }),
+        ]);
+
+        const roomDecision = {
+            ...dungeonDecision,
+            choice: {
+                ...dungeonDecision.choice,
+                options: ['Veils of Fear', 'Sandfall Cell'],
+                prompt: 'Choose the next Dungeon room.',
+            },
+            options: ['Veils of Fear', 'Sandfall Cell'].map(room => ({
+                decisions: { resolutionOption: [room] },
+                id: `choose:${room}`,
+                kind: 'chooseResolution',
+                label: `Choose ${room}`,
+                playerId: 'player-1',
+            })),
+        };
+        const roomProjection = projectGameSessionView(sessionView({
+            decision: roomDecision,
+            state: {
+                ...base.state,
+                gamePieces: [tomb, mine],
+                ruleModifiers: [{
+                    dungeonId: tomb.id,
+                    kind: 'dungeonPosition',
+                    playerId: 'player-1',
+                    room: 'Trapped Entry',
+                }],
+            },
+        }), { cardCatalog, playerRoles: ['human'] });
+        expect(roomProjection.dungeonChoice).toEqual(expect.objectContaining({
+            currentRoom: 'Trapped Entry',
+            kind: 'room',
+            options: [
+                expect.objectContaining({ label: 'Veils of Fear' }),
+                expect.objectContaining({ label: 'Sandfall Cell' }),
+            ],
+        }));
+        expect(roomProjection.dungeonChoice.cards).toEqual([
+            expect.objectContaining({ imageUrl: 'tomb.jpg', name: tomb.name }),
+        ]);
+    });
+
+    test('Feature: private search observations become persistent game notes without library order.', () => {
+        const base = sessionView();
+        const projected = projectGameSessionView(sessionView({
+            state: {
+                ...base.state,
+                ruleModifiers: [{
+                    kind: 'observedCardsNote',
+                    orderKnown: false,
+                    playerId: 'player-1',
+                    sourceName: 'Surgical Extraction',
+                    turnNumber: 3,
+                    viewerId: 'player-1',
+                    zones: [{
+                        cards: [
+                            { count: 4, name: 'Brainstorm' },
+                            { count: 1, name: 'Force of Will' },
+                        ],
+                        zone: 'library',
+                    }],
+                }],
+            },
+        }), { playerRoles: ['human'] });
+
+        expect(projected.gameNotes).toEqual([{
+            orderKnown: false,
+            playerId: 'player-1',
+            playerName: 'You',
+            sourceName: 'Surgical Extraction',
+            turnNumber: 3,
+            zones: [{
+                cards: [
+                    { count: 4, name: 'Brainstorm' },
+                    { count: 1, name: 'Force of Will' },
+                ],
+                zone: 'library',
+            }],
+        }]);
     });
 });

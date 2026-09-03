@@ -806,6 +806,27 @@ function createStatsBadge(container, value) {
     return badge;
 }
 
+function createKnownCardBadge(container, width = cardWidth, height = cardHeight) {
+    const badge = new Container();
+    const background = new Graphics();
+    background.beginFill(0x101828, 0.92);
+    background.lineStyle(2, 0xffffff, 0.95);
+    background.drawCircle(0, 0, 13);
+    background.endFill();
+    const eye = new Graphics();
+    eye.lineStyle(2, 0xffffff, 1);
+    eye.drawEllipse(0, 0, 8, 5);
+    eye.beginFill(0x60a5fa, 1);
+    eye.drawCircle(0, 0, 3);
+    eye.endFill();
+    badge.addChild(background, eye);
+    badge.position.set(-width / 2 + 15, -height / 2 + 15);
+    badge.eventMode = 'none';
+    badge.label = 'known-card-indicator';
+    container.addChild(badge);
+    return badge;
+}
+
 function createHoveredStatsBadge(container, value) {
     const badge = new Container();
     const shadow = new Graphics();
@@ -954,6 +975,9 @@ function createCardView(model, options = {}) {
     if (Number(model.selectionOrder) > 0) {
         createSelectionOrderBadge(view, model.selectionOrder, width, height);
     }
+    if (model.knownToViewer) {
+        createKnownCardBadge(view, width, height);
+    }
     if (options.showStats && model.stats) {
         createStatsBadge(view, model.stats);
         view.hoveredStatsBadge = createHoveredStatsBadge(view, model.stats);
@@ -1080,6 +1104,7 @@ function sceneCardModel(card, sceneZone = '') {
             raw.selectedOption?.imageUrl ??
             raw.selectedOption?.urlFront ??
             '',
+        knownToViewer: Boolean(card.knownToViewer ?? raw.knownToViewer),
         name: card.name ?? raw.name ?? 'Unknown card',
         rules: raw.oracleText ?? '',
         sceneZone: card.sourceZone || raw.sourceZone || sceneZone,
@@ -1137,6 +1162,7 @@ function liveViewFingerprint(card, zone, options = {}) {
         model.commander,
         model.counters,
         model.imageUrl,
+        model.knownToViewer,
         model.name,
         model.rules,
         model.selectionOrder,
@@ -1224,10 +1250,11 @@ function createLiveZoneView(zone, player, indexedViews) {
         return null;
     }
     const isLibrary = zone.id === 'library';
+    const showsLibraryBack = isLibrary && !topCard.knownToViewer;
     const model = sceneCardModel(topCard, zone.id);
     const zoneCount = Number(zone.count ?? zone.cards?.length ?? 0);
     const fingerprint = liveViewFingerprint(topCard, zone.id, {
-        back: isLibrary,
+        back: showsLibraryBack,
         zoneCount,
     });
     const existingView = reuseLiveView(
@@ -1244,13 +1271,13 @@ function createLiveZoneView(zone, player, indexedViews) {
         return existingView;
     }
     const view = createCardView(model, {
-        back: isLibrary,
+        back: showsLibraryBack,
         hoverLabel: isLibrary
             ? `Library · ${Number(zone.count ?? 0)} cards`
             : '',
         hoverOnly: isLibrary,
         interactive: true,
-        sceneCard: isLibrary ? null : topCard,
+        sceneCard: showsLibraryBack ? null : topCard,
         scenePlayer: player,
         sceneZone: zone.id,
     });
