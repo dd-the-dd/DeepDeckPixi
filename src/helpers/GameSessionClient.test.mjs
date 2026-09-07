@@ -887,6 +887,94 @@ describe('GameSessionClient', () => {
         expect(transformed.state.transformed).toBe(true);
     });
 
+    test('Feature: Modal double-faced permanents display the face selected by the engine action.', () => {
+        const card = {
+            canonicalRules: [{
+                kind: 'rulesMarker',
+                splitFaces: [],
+                text: 'Modal double-faced card faces.',
+            }],
+            name: 'Witch Enchanter // Witch-Blessed Meadow',
+            selectedOption: {
+                faces: [
+                    {
+                        id: 'witch-enchanter:front',
+                        manaCost: '{3}{W}',
+                        name: 'Witch Enchanter',
+                        power: '2',
+                        toughness: '2',
+                        typeLine: 'Creature - Human Warlock',
+                    },
+                    {
+                        id: 'witch-enchanter:back',
+                        manaCost: '',
+                        name: 'Witch-Blessed Meadow',
+                        typeLine: 'Land',
+                    },
+                ],
+                id: 'witch-enchanter',
+                layout: 'modal_dfc',
+                urlBack: 'witch-enchanter-back.jpg',
+                urlFront: 'witch-enchanter-front.jpg',
+            },
+        };
+        const request = gameSessionRequestFromDeckSelections([
+            { cards: [card], name: 'You' },
+            { cards: [], name: 'Opponent' },
+        ]);
+        const printedDefinition = request.setup.players[0].cards[0];
+        const view = sessionView();
+        view.state.players[0].hand = [];
+        view.state.players[0].battlefield = [
+            {
+                controller: 'player-1',
+                definition: {
+                    ...printedDefinition,
+                    manaCost: '{3}{W}',
+                    name: 'Witch Enchanter',
+                    power: '2',
+                    toughness: '2',
+                    typeLine: 'Creature - Human Warlock',
+                },
+                flags: {},
+                instanceId: 'witch-enchanter-as-creature',
+                owner: 'player-1',
+                tapped: false,
+            },
+            {
+                controller: 'player-1',
+                definition: {
+                    ...printedDefinition,
+                    manaCost: '',
+                    name: 'Witch-Blessed Meadow',
+                    power: null,
+                    toughness: null,
+                    typeLine: 'Land',
+                },
+                flags: {},
+                instanceId: 'witch-enchanter-as-land',
+                owner: 'player-1',
+                tapped: true,
+            },
+        ];
+        const catalog = gameSessionCardCatalogFromDeckSelections([
+            { cards: [card], name: 'You' },
+        ]);
+
+        const battlefield = projectGameSessionView(view, { cardCatalog: catalog })
+            .players[0].zones.battlefield;
+
+        expect(battlefield.creatures[0]).toEqual(expect.objectContaining({
+            imageUrl: 'witch-enchanter-front.jpg',
+            name: 'Witch Enchanter',
+        }));
+        expect(battlefield.lands[0]).toEqual(expect.objectContaining({
+            imageUrl: 'witch-enchanter-back.jpg',
+            name: 'Witch-Blessed Meadow',
+        }));
+        expect(battlefield.lands[0].state.transformed).toBe(false);
+    });
+
     test('Feature: A current-turn graveyard permission remains actionable in the end step.', () => {
         const view = sessionView();
         const milledCard = {
