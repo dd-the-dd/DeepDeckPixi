@@ -149,6 +149,19 @@ function cardPresentationKey(name) {
     return normalized ? `card-art:${normalized}` : '';
 }
 
+function activeModalFaceIndex(definition, metadata) {
+    if (metadata?.layout !== 'modal_dfc') {
+        return -1;
+    }
+    const activeName = cardPresentationKey(definition?.name);
+    if (!activeName) {
+        return -1;
+    }
+    return (metadata.faces ?? []).findIndex(face => {
+        return cardPresentationKey(face?.name) === activeName;
+    });
+}
+
 function registerCardPresentation(catalog, metadata, ...names) {
     for (const name of names) {
         const key = cardPresentationKey(name);
@@ -912,7 +925,8 @@ function displayCard(instance, cardCatalog, actions, sourceZone = '', calculated
         cardCatalog[cardPresentationKey(definition.name)] ??
         globalTokenMetadata ??
         {};
-    const showingBackFace = Boolean(instance.flags?.transformed);
+    const transformed = Boolean(instance.flags?.transformed);
+    const showingBackFace = transformed || activeModalFaceIndex(definition, metadata) > 0;
     const cardActions = actions.filter(action => {
         return gameSessionActionCardId(action) === instance.instanceId;
     });
@@ -954,7 +968,7 @@ function displayCard(instance, cardCatalog, actions, sourceZone = '', calculated
             powerModifier: Number(instance.powerModifier ?? 0),
             summoningSick: Boolean(instance.summoningSick),
             tapped: Boolean(instance.tapped),
-            transformed: showingBackFace,
+            transformed,
             toughnessModifier: Number(instance.toughnessModifier ?? 0),
         },
         toughness: definition.toughness ?? null,
