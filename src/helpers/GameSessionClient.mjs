@@ -954,9 +954,9 @@ function displayCard(instance, cardCatalog, actions, sourceZone = '', calculated
         imageUrl: showingBackFace
             ? metadata.urlBack ?? metadata.imageUrl ?? metadata.urlFront ?? ''
             : metadata.imageUrl ?? metadata.urlFront ?? '',
-        manaCost: definition.manaCost ?? '',
+        manaCost: definition.manaCost ?? metadata.manaCost ?? '',
         name: definition.name ?? metadata.name ?? 'Unknown card',
-        power: definition.power ?? null,
+        power: definition.power ?? metadata.power ?? null,
         quantity: 1,
         ...(sourceZone && sourceZone !== 'hand' ? { sourceZone } : {}),
         state: {
@@ -971,8 +971,8 @@ function displayCard(instance, cardCatalog, actions, sourceZone = '', calculated
             transformed,
             toughnessModifier: Number(instance.toughnessModifier ?? 0),
         },
-        toughness: definition.toughness ?? null,
-        typeLine: definition.typeLine ?? '',
+        toughness: definition.toughness ?? metadata.toughness ?? null,
+        typeLine: definition.typeLine ?? metadata.typeLine ?? '',
         actionState: {
             actionable: presentationActions.length > 0,
             actions: presentationActions.map(action => action.label),

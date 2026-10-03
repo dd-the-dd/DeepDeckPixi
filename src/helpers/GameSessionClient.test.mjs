@@ -185,6 +185,44 @@ describe('GameSessionClient', () => {
         expect(projectGameSessionView(view).decisionSourceCard).toBeNull();
     });
 
+    test('Bug: Compact replay cards recover battlefield types from the deck catalog.', () => {
+        const base = sessionView();
+        const view = sessionView({
+            state: {
+                ...base.state,
+                players: [{
+                    ...base.state.players[0],
+                    battlefield: [{
+                        controller: 'player-1',
+                        definition: { id: 'compact-creature', name: 'Compact Creature' },
+                        instanceId: 'compact-creature:1',
+                        owner: 'player-1',
+                    }],
+                }],
+            },
+        });
+        const projected = projectGameSessionView(view, {
+            cardCatalog: {
+                'compact-creature': {
+                    imageUrl: 'compact.jpg',
+                    manaCost: '{1}{G}',
+                    name: 'Compact Creature',
+                    power: '2',
+                    toughness: '3',
+                    typeLine: 'Creature — Test',
+                },
+            },
+        });
+
+        expect(projected.players[0].zones.battlefield.creatures[0]).toMatchObject({
+            imageUrl: 'compact.jpg',
+            manaCost: '{1}{G}',
+            power: '2',
+            toughness: '3',
+            typeLine: 'Creature — Test',
+        });
+    });
+
     test('Feature: Network player roles follow player IDs after seat order is randomized.', () => {
         const base = sessionView();
         const projected = projectGameSessionView(sessionView({
