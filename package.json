@@ -1,6 +1,6 @@
 {
   "name": "@deepdeck/pixi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reusable PixiJS game renderer, session projection and replay host for DeepDeckEngine",
   "type": "module",
   "license": "MIT",

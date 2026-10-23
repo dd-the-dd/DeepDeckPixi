@@ -20,6 +20,15 @@ test('UI action identity tolerates combat and transport-compatible source fields
     expect(gameSessionActionCardId({ source_card_instance_id: 'source' })).toBe('source');
 });
 
+test('empty preferred image fields do not hide other usable artwork URLs', () => {
+    const catalog = gameSessionCardCatalogFromDeckSelections([{cards:[
+        {id:'front',name:'Front',imageUrl:'',urlFront:'front.jpg'},
+        {id:'transport',name:'Transport',imageUrl:'',imageUri:'transport.jpg'},
+    ]}]);
+    expect(catalog.front.imageUrl).toBe('front.jpg');
+    expect(catalog.transport.imageUrl).toBe('transport.jpg');
+});
+
 function sessionView(overrides = {}) {
     return {
         decision: {
@@ -90,6 +99,31 @@ function sessionView(overrides = {}) {
         ...overrides,
     };
 }
+
+test('spectator null sideboard slots keep their count without exposing cards or crashing', () => {
+    const view = sessionView({decision: null});
+    view.state.players[0].library = [null, null];
+    view.state.players[0].sideboard = Array(15).fill(null);
+    const projection = projectGameSessionView(view, {
+        cardCatalog: {undefined: {name: 'Must never resolve a hidden identity', imageUrl: 'private.jpg'}},
+    });
+    expect(projection.players[0].zones.sideboard).toMatchObject({
+        count: 15, cards: [], top: null, actionable: false,
+    });
+    expect(projection.players[0].zones.libraryCount).toBe(2);
+    expect(projection.players[0].zones.libraryTop).toBeNull();
+    expect(projection.players[0].zones.hand[0].name).toBe('Opt');
+    expect(JSON.stringify(projection)).not.toContain('private.jpg');
+});
+
+test('a hidden final zone slot does not present an earlier visible card as its top', () => {
+    const view = sessionView({decision: null});
+    view.state.players[0].sideboard = [view.state.players[0].hand[0], null];
+    const zone = projectGameSessionView(view).players[0].zones.sideboard;
+    expect(zone.count).toBe(2);
+    expect(zone.cards).toHaveLength(1);
+    expect(zone.top).toBeNull();
+});
 
 describe('GameSessionClient', () => {
     test('projects card-name choices as a structured free-text decision', () => {
@@ -395,6 +429,44 @@ describe('GameSessionClient', () => {
                 },
             }),
         ]);
+    });
+
+    test('Bug: Copied Lightning Bolt selects typed player/permanent targets directly without changing Engine action IDs.', () => {
+        const base = sessionView();
+        const creature = { ...base.state.players[0].hand[0], instanceId: 'player-2:creature:42', definition: { id: 'bear', name: 'Bear', typeLine: 'Creature', rules: [] } };
+        const decisionId = 'chooseOption:stack:bolt:copy:0';
+        const options = ['player:player-1', 'player:player-2', `permanent:${creature.instanceId}`].map((selected, index) => ({
+            id: `resolve:copy:${index}`, kind: 'chooseResolution', playerId: 'player-1',
+            label: selected, decisions: { [decisionId]: [selected] },
+        }));
+        const state = {...base.state, players: [base.state.players[0], {...base.state.players[0], id: 'player-2', name: 'Opponent', hand: [], battlefield: [creature]}]};
+        const decision = { id: 'resolution:bolt-copy', kind: 'resolutionChoice', playerId: 'player-1', choice: {kind: 'optionSelection', decisionId, prompt: 'Choose a legal target.'}, options };
+        const projected = projectGameSessionView(sessionView({state, decision}));
+        expect(projected.resolutionTargetChoice.actions.map(action => action.id)).toEqual(options.map(action => action.id));
+        expect(projected.resolutionTargetChoice.actions.map(action => action.targets.resolutionBoardTarget)).toEqual([
+            {player: {playerId: 'player-1'}}, {player: {playerId: 'player-2'}}, {permanent: {instanceId: creature.instanceId}},
+        ]);
+        expect(projected.directActions.map(action => action.id)).toEqual(options.map(action => action.id));
+        expect(options[2].decisions[decisionId]).toEqual([`permanent:${creature.instanceId}`]);
+        expect(options[2].targets).toBeUndefined();
+        // Never invent a target, change its type, or discard a nonvisual choice.
+        for (const invalid of ['permanent:missing', `player:${creature.instanceId}`, 'Keep existing targets']) {
+            const bad = {...options[2], decisions: {[decisionId]: [invalid]}};
+            const fallback = projectGameSessionView(sessionView({state, decision: {...decision, options: [...options, bad]}}));
+            expect(fallback.resolutionTargetChoice).toBeNull();
+            expect(fallback.directActions.map(action => action.id)).toHaveLength(4);
+        }
+    });
+
+    test('Bug: Copy retargeting of stack objects uses the visible stack ID, not a parsed card name.', () => {
+        const base = sessionView();
+        const decisionId = 'retarget';
+        const action = {id: 'resolve:counter-copy', kind: 'chooseResolution', playerId: 'player-1', decisions: {[decisionId]: ['stack:stack:spell:9']}};
+        const projected = projectGameSessionView(sessionView({
+            state: {...base.state, stack: [{id: 'stack:spell:9', controller: 'player-1', card: base.state.players[0].hand[0]}]},
+            decision: {id: 'resolution:copy', kind: 'resolutionChoice', playerId: 'player-1', choice: {kind: 'optionSelection', decisionId}, options: [action]},
+        }));
+        expect(projected.resolutionTargetChoice.actions[0]).toMatchObject({id: action.id, targets: {resolutionBoardTarget: {stackObject: {stackId: 'stack:spell:9'}}}});
     });
 
     test('Feature: Abstract resolution options remain directly actionable when the source is on the stack.', () => {
@@ -1839,6 +1911,36 @@ describe('GameSessionClient', () => {
             .toBe('cat-lifelink.jpg');
     });
 
+    test('Bug: compact recordings resolve generated token names without an isToken flag', () => {
+        const catalog = gameSessionCardCatalogFromDeckSelections([{cards:[{
+            id:'spawn-printing',name:'Eldrazi Spawn',isToken:true,imageUrl:'spawn.jpg',
+            typeLine:'Token Creature — Eldrazi Spawn',power:'0',toughness:'1',
+        }]}]);
+        const base = sessionView();
+        const projected = projectGameSessionView(sessionView({state:{...base.state,players:[{
+            ...base.state.players[0],hand:[],battlefield:[{
+                instanceId:'batch-seat-1:token:stack:8',controller:'batch-seat-1',owner:'batch-seat-1',
+                definition:{id:'token:eldrazi spawn token',name:'Eldrazi Spawn Token',typeLine:'Creature - Eldrazi Spawn',power:'0',toughness:'1'},
+            }],
+        }]}}),{cardCatalog:catalog});
+        expect(projected.players[0].zones.battlefield.creatures[0]).toMatchObject({imageUrl:'spawn.jpg',isToken:true});
+    });
+
+    test('Bug: double-faced land art survives old snapshots without a layout field', () => {
+        const catalog = gameSessionCardCatalogFromDeckSelections([{cards:[{
+            id:'witch',name:'Witch Enchanter // Witch-Blessed Meadow',imageUrl:'witch-front.jpg',urlBack:'meadow-back.jpg',
+            faces:[{id:'witch:0',name:'Witch Enchanter',imageUrl:'witch-front.jpg'},{id:'witch:1',name:'Witch-Blessed Meadow',imageUrl:'meadow-back.jpg'}],
+        }]}]);
+        const base = sessionView();
+        const projected = projectGameSessionView(sessionView({state:{...base.state,players:[{
+            ...base.state.players[0],hand:[],battlefield:[{
+                instanceId:'played-meadow',controller:'player-1',owner:'player-1',
+                definition:{id:'witch',name:'Witch-Blessed Meadow',typeLine:'Land'},
+            }],
+        }]}}),{cardCatalog:catalog});
+        expect(projected.players[0].zones.battlefield.lands[0].imageUrl).toBe('meadow-back.jpg');
+    });
+
     test('Feature: An animated land stays one permanent and exposes its current power/toughness.', () => {
         const base = sessionView();
         const hall = {
@@ -2045,11 +2147,15 @@ describe('GameSessionClient', () => {
         expect(card.currentToughness).toBe(3);
     });
 
-    test('Feature: Alexios counters accumulate in the projected stats and remain available to the UI.', () => {
+    test.each([
+        [{ '+1/+1': 3 }, null, 7],
+        [{ '+1/+1': 3, '-1/-1': 2, charge: 8 }, null, 5],
+        [{ '-1/-1': 3 }, { currentPower: 9, currentToughness: 9 }, 9],
+    ])('Feature: typed counters remain available without double-applying calculated stats (%j).', (counters, effectiveStats, expectedStat) => {
         const base = sessionView();
         const alexios = {
             controller: 'player-2',
-            counters: { '+1/+1': 3 },
+            counters,
             definition: {
                 id: 'alexios',
                 manaCost: '{3}{R}',
@@ -2064,6 +2170,7 @@ describe('GameSessionClient', () => {
             tapped: false,
         };
         const projected = projectGameSessionView(sessionView({
+            calculatedStats: effectiveStats ? { 'player-1:alexios': effectiveStats } : {},
             state: {
                 ...base.state,
                 players: [
@@ -2084,9 +2191,9 @@ describe('GameSessionClient', () => {
         }));
         const card = projected.players[1].zones.battlefield.creatures[0];
 
-        expect(card.currentPower).toBe(7);
-        expect(card.currentToughness).toBe(7);
-        expect(card.state.counters).toEqual({ '+1/+1': 3 });
+        expect(card.currentPower).toBe(expectedStat);
+        expect(card.currentToughness).toBe(expectedStat);
+        expect(card.state.counters).toEqual(counters);
     });
 
     test('Feature: Rust card-selection decisions project the exact offered card combinations.', () => {

@@ -6,6 +6,7 @@
       'pixi-game-mobile-focus': mobileFocusEnabled,
     }"
     :data-mode="mode"
+    :style="{ '--pixi-toolbar-height': `${toolbarHeight}px` }"
     aria-label="Client de jeu PixiJS"
     @touchstart.passive="beginMobilePlayerSwipe"
     @touchend.passive="endMobilePlayerSwipe"
@@ -19,6 +20,8 @@
       :data-card-images-loading="imageDiagnostics.loading"
       :data-card-images-missing="imageDiagnostics.missing"
       :data-card-images-ready="imageDiagnostics.ready"
+      :data-token-images-expected="imageDiagnostics.tokenExpected"
+      :data-token-images-ready="imageDiagnostics.tokenReady"
     />
 
     <header class="pixi-game-topbar">
@@ -195,7 +198,23 @@
       </div>
     </aside>
 
-    <div class="pixi-game-controls">
+    <details v-if="counterCards.length" class="pixi-counter-inspector">
+      <summary>Marqueurs · {{ counterCards.length }}</summary>
+      <div class="pixi-counter-list">
+        <section v-for="card in counterCards" :key="card.id">
+          <strong>{{ card.name }}</strong>
+          <small>{{ card.playerName }}</small>
+          <dl>
+            <template v-for="counter in card.entries" :key="counter.name">
+              <dt>{{ counter.name }}</dt><dd>{{ counter.count }}</dd>
+            </template>
+          </dl>
+        </section>
+      </div>
+    </details>
+
+    <div ref="toolbarElement" class="pixi-game-controls">
+      <div ref="extensionControls" class="pixi-extension-controls" />
       <template v-if="isReplay">
         <span class="pixi-replay-label">{{ scene.spectator ? 'Live spectator' : 'Official replay' }}</span>
       </template>
@@ -285,11 +304,15 @@ import {
 } from 'pixi.js';
 import {
     pixiCardOutlineColor,
+    pixiCounterEntries,
     pixiHandScale,
+    pixiHandFan,
     pixiPermanentScale,
     pixiPrivateZonePosition,
     pixiToggledZoneKey,
 } from '../helpers/PixiGameLayout.mjs';
+import { CardTextureCache } from '../helpers/CardTextureCache.mjs';
+import { VisualSceneLatch } from '../helpers/VisualSceneLatch.mjs';
 
 const props = defineProps({
     cardBackUrl: {
@@ -326,7 +349,26 @@ const emit = defineEmits([
     'stack-click',
     'toggle-pass-stack',
     'toggle-priority',
+    'controls-ready',
+    'visual-settled',
 ]);
+const extensionControls = ref(null);
+const toolbarElement = ref(null);
+const toolbarHeight = ref(0);
+let toolbarObserver = null;
+const visualSceneLatch = new VisualSceneLatch();
+const counterCards = computed(() => (props.scene?.players ?? []).flatMap(player => {
+    return (player.battlefield ?? []).flatMap(card => {
+        const entries = pixiCounterEntries(card.counters ?? card.state?.counters ??
+            card.raw?.state?.counters ?? card.raw?.counters);
+        return entries.length ? [{
+            id: `${player.id}:${card.id}`,
+            name: card.name ?? card.raw?.name ?? 'Permanent',
+            playerName: player.name,
+            entries,
+        }] : [];
+    });
+}));
 const canvasHost = ref(null);
 const fps = ref(60);
 const phase = ref('main');
@@ -486,8 +528,9 @@ let elapsedFpsTime = 0;
 let arrowAlpha = 0;
 let attackArrow = null;
 let mobileFocusTimer = null;
-const textures = new Set();
-const imageTexturePromises = new Map();
+let disposed = false;
+const imageTextureCache = new CardTextureCache(loadImageTextureWithRetries);
+const cancelImageLoads = new Set();
 const animatedViews = new Set();
 const imageDiagnostics = ref({
     expected: 0,
@@ -495,6 +538,8 @@ const imageDiagnostics = ref({
     loading: 0,
     missing: 0,
     ready: 0,
+    tokenExpected: 0,
+    tokenReady: 0,
 });
 
 const cardWidth = 118;
@@ -550,6 +595,10 @@ function pixiImageUrl(url) {
 
 function loadDecodedImage(url) {
     return new Promise((resolve, reject) => {
+        if (disposed) {
+            reject(new Error('Renderer disposed'));
+            return;
+        }
         const image = new Image();
         let settled = false;
         const finish = (callback, value) => {
@@ -560,8 +609,14 @@ function loadDecodedImage(url) {
             window.clearTimeout(timeoutId);
             image.onload = null;
             image.onerror = null;
+            cancelImageLoads.delete(cancel);
             callback(value);
         };
+        const cancel = () => {
+            finish(reject, new Error('Renderer disposed'));
+            image.src = '';
+        };
+        cancelImageLoads.add(cancel);
         const timeoutId = window.setTimeout(() => {
             // An Image request can remain pending indefinitely. Because Pixi limits
             // concurrent downloads, a handful of stalled CDN requests otherwise
@@ -593,14 +648,15 @@ function loadDecodedImage(url) {
 
 async function loadImageTextureWithRetries(url) {
     for (let attempt = 0; attempt < imageLoadMaxAttempts; attempt += 1) {
+        if (disposed) return null;
         try {
             return await enqueueImageLoad(async () => {
                 const image = await loadDecodedImage(url);
+                if (disposed) return null;
                 const texture = Texture.from(image);
                 if (!texture || texture.destroyed || texture.baseTexture?.destroyed) {
                     throw new Error(`Pixi rejected card image texture: ${url}`);
                 }
-                textures.add(texture);
                 return texture;
             });
         } catch {
@@ -614,29 +670,7 @@ async function loadImageTextureWithRetries(url) {
 }
 
 function loadImageTexture(url) {
-    if (!url) {
-        return Promise.resolve(null);
-    }
-    const cachedPromise = imageTexturePromises.get(url);
-    if (cachedPromise) {
-        return cachedPromise.then(texture => {
-            if (!texture?.destroyed) {
-                return texture;
-            }
-            if (imageTexturePromises.get(url) === cachedPromise) {
-                imageTexturePromises.delete(url);
-            }
-            return loadImageTexture(url);
-        });
-    }
-    const texturePromise = loadImageTextureWithRetries(url).then(texture => {
-        if (!texture && imageTexturePromises.get(url) === texturePromise) {
-            imageTexturePromises.delete(url);
-        }
-        return texture;
-    });
-    imageTexturePromises.set(url, texturePromise);
-    return texturePromise;
+    return imageTextureCache.get(url);
 }
 
 function replaceSpriteTextureWhenReady(
@@ -654,10 +688,6 @@ function replaceSpriteTextureWhenReady(
             return;
         }
         if (!requestingApp || app !== requestingApp || sprite.destroyed) {
-            if (!app || app !== requestingApp) {
-                textures.delete(texture);
-                texture.destroy(true);
-            }
             return;
         }
         if (sprite.requestedImageUrl && sprite.requestedImageUrl !== url) {
@@ -671,11 +701,14 @@ function replaceSpriteTextureWhenReady(
 }
 
 function refreshImageDiagnostics() {
-    const sprites = livePlayerViews.flatMap(entry => [
+    const views = [...livePlayerViews.flatMap(entry => [
         ...entry.permanentViews,
         ...entry.handViews,
         ...(entry.zoneViews ?? []),
-    ]).map(view => view.cardSprite).filter(Boolean);
+    ]), ...linkedExileViews];
+    const sprites = views.map(view => view.cardSprite).filter(Boolean);
+    const tokens = views.filter(view => view.sceneCard?.raw?.isToken && !view.sceneCard?.faceDown);
+    imageTextureCache.retain(sprites.map(sprite => sprite.requestedImageUrl));
     const states = sprites
         .filter(sprite => sprite.requestedImageUrl !== magicCardBackUrl)
         .map(sprite => sprite.imageLoadState);
@@ -685,6 +718,8 @@ function refreshImageDiagnostics() {
         loading: states.filter(state => state === 'loading').length,
         missing: states.filter(state => state === 'missing').length,
         ready: states.filter(state => state === 'ready').length,
+        tokenExpected: tokens.length,
+        tokenReady: tokens.filter(view => view.cardSprite?.imageLoadState === 'ready').length,
     };
 }
 
@@ -734,23 +769,37 @@ function targetView(view, x, y, rotation = view.rotation, scale = 1) {
     animatedViews.add(view);
 }
 
-function createBadge(container, value) {
-    const badge = new Container();
-    const circle = new Graphics();
-    circle.beginFill(0xe6a63f);
-    circle.lineStyle(2, 0xffe1a2);
-    circle.drawCircle(0, 0, 12);
-    circle.endFill();
-    const label = new Text(String(value), new TextStyle({
-        fill: 0x1b1206,
-        fontFamily: 'system-ui',
-        fontSize: 12,
-        fontWeight: '700',
-    }));
-    label.anchor.set(0.5);
-    badge.addChild(circle, label);
-    badge.position.set(cardWidth / 2 - 4, -cardHeight / 2 + 5);
-    container.addChild(badge);
+function createCounterBadges(container, counters, width, height) {
+    const entries = pixiCounterEntries(counters);
+    const visible = entries.slice(0, 3).map(counter => `${counter.count} ${counter.name}`);
+    if (entries.length > 3) visible.push(`+${entries.length - 3} types`);
+    visible.forEach((text, index) => {
+        const badge = new Container();
+        const label = new Text(text, new TextStyle({
+            fill: 0xffe1a2,
+            fontFamily: 'system-ui',
+            fontSize: 13,
+            fontWeight: '800',
+        }));
+        const availableWidth = width - 12;
+        if (label.width > availableWidth) {
+            // Full arbitrary names remain available in the accessible inspector.
+            while (label.text.length > 2 && label.width > availableWidth) {
+                label.text = label.text.slice(0, -2) + '…';
+            }
+        }
+        label.anchor.set(0, 0.5);
+        const background = new Graphics();
+        background.beginFill(0x231b10, 0.96);
+        background.lineStyle(1, 0xe6a63f);
+        background.drawRoundedRect(-4, -10, Math.min(width, label.width + 8), 20, 5);
+        background.endFill();
+        badge.addChild(background, label);
+        badge.position.set(-width / 2 + 6, -height / 2 + 13 + index * 22);
+        badge.eventMode = 'none';
+        badge.label = `counter:${entries[index]?.name ?? 'more'}`;
+        container.addChild(badge);
+    });
 }
 
 function createSelectionOrderBadge(container, value, width, height) {
@@ -886,29 +935,31 @@ function createCardView(model, options = {}) {
     const showsBack = Boolean(options.back);
     const imageUrl = showsBack ? magicCardBackUrl : model.imageUrl;
     const retainedSprite = options.sprite ?? null;
-    const retainedTextureReady = retainedSprite?.loadedImageUrl === imageUrl;
+    const cachedTexture = imageTextureCache.peek(imageUrl);
+    const retainedTextureReady = Boolean(imageUrl && retainedSprite?.loadedImageUrl === imageUrl);
+    const textureReady = retainedTextureReady || Boolean(cachedTexture);
     const placeholder = showsBack ? null : createFaceUpPlaceholder(model, width, height);
     const sprite = retainedSprite ?? new Sprite(
-        showsBack ? Texture.from(magicCardBackUrl) : Texture.WHITE,
+        cachedTexture ?? Texture.WHITE,
     );
     sprite.anchor.set(0.5);
     sprite.width = width;
     sprite.height = height;
-    sprite.visible = showsBack || retainedTextureReady;
+    sprite.visible = textureReady;
     sprite.requestedImageUrl = imageUrl;
-    sprite.imageLoadState = showsBack
+    sprite.imageLoadState = textureReady
         ? 'ready'
-        : retainedTextureReady
-            ? 'ready'
-            : imageUrl
-                ? 'loading'
-                : 'missing';
-    if (retainedTextureReady) {
+        : imageUrl
+            ? 'loading'
+            : 'missing';
+    if (textureReady) {
+        sprite.loadedImageUrl = imageUrl;
+        if (cachedTexture) sprite.texture = cachedTexture;
         if (placeholder) {
             placeholder.visible = false;
         }
     } else if (imageUrl) {
-        sprite.texture = showsBack ? Texture.from(magicCardBackUrl) : Texture.WHITE;
+        sprite.texture = Texture.WHITE;
         replaceSpriteTextureWhenReady(sprite, imageUrl, width, height, () => {
             if (sprite.requestedImageUrl !== imageUrl) {
                 return;
@@ -969,8 +1020,8 @@ function createCardView(model, options = {}) {
     view.eventMode = options.interactive ? 'static' : 'none';
     view.cursor = options.interactive ? 'pointer' : 'default';
     view.hitArea = new Rectangle(-cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight);
-    if (model.counters) {
-        createBadge(view, model.counters);
+    if (!showsBack || model.sceneZone === 'battlefield') {
+        createCounterBadges(view, model.counters, width, height);
     }
     if (Number(model.selectionOrder) > 0) {
         createSelectionOrderBadge(view, model.selectionOrder, width, height);
@@ -1094,15 +1145,15 @@ function sceneCardModel(card, sceneZone = '') {
         actionable: Boolean(card.actionable),
         art: ['#344054', '#98a2b3'],
         commander: Boolean(card.commander),
-        counters: Number(card.counters ?? 0),
-        imageUrl: card.imageUrl ??
-            card.urlFront ??
-            card.selectedOption?.imageUrl ??
-            card.selectedOption?.urlFront ??
-            raw.imageUrl ??
-            raw.urlFront ??
-            raw.selectedOption?.imageUrl ??
-            raw.selectedOption?.urlFront ??
+        counters: card.counters ?? card.state?.counters ?? raw.state?.counters ?? raw.counters ?? {},
+        imageUrl: card.imageUrl ||
+            card.urlFront ||
+            card.selectedOption?.imageUrl ||
+            card.selectedOption?.urlFront ||
+            raw.imageUrl ||
+            raw.urlFront ||
+            raw.selectedOption?.imageUrl ||
+            raw.selectedOption?.urlFront ||
             '',
         knownToViewer: Boolean(card.knownToViewer ?? raw.knownToViewer),
         name: card.name ?? raw.name ?? 'Unknown card',
@@ -1174,7 +1225,10 @@ function liveViewFingerprint(card, zone, options = {}) {
 
 function reuseLiveView(indexedViews, card, player, zone, fingerprint) {
     const view = indexedViews.get(card.id);
-    if (!view || view.liveFingerprint !== fingerprint) {
+    const sprite = view?.cardSprite;
+    const retryFailedImage = sprite?.imageLoadState === 'failed' &&
+        imageTextureCache.canRetry(sprite.requestedImageUrl);
+    if (!view || view.liveFingerprint !== fingerprint || retryFailedImage) {
         return null;
     }
     indexedViews.delete(card.id);
@@ -1218,6 +1272,15 @@ function createLiveCardView(card, player, zone, indexedViews) {
     if (existingView) {
         return existingView;
     }
+    const previousView = indexedViews.get(card.id);
+    // Rebuild badges when interaction changes, but keep the decoded sprite.
+    // Privacy transitions must never retain the previously visible face.
+    const previousSprite = previousView?.cardSprite;
+    const imageUrl = card.faceDown ? magicCardBackUrl : model.imageUrl;
+    const sprite = previousSprite?.loadedImageUrl === imageUrl
+        ? previousSprite
+        : null;
+    if (sprite) previousView.removeChild(sprite);
     const view = createCardView(model, {
         back: Boolean(card.faceDown),
         interactive: true,
@@ -1225,6 +1288,7 @@ function createLiveCardView(card, player, zone, indexedViews) {
         scenePlayer: player,
         sceneZone: zone,
         showStats: zone === 'battlefield' && card.kind === 'creature',
+        sprite,
     });
     view.cardId = card.id;
     view.liveFingerprint = fingerprint;
@@ -1367,14 +1431,25 @@ function renderLiveScene() {
             );
             view.linkedCardId = card.id;
             view.linkedTo = card.linkedTo;
-            createZoneBadge(view, 'linkedExile', 1);
+            if (!view.linkedExileBadge) {
+                view.linkedExileBadge = createZoneBadge(view, 'linkedExile', 1);
+            }
             cardLayer.addChild(view);
             return view;
         });
     });
     destroyStaleLiveViews(indexedViews);
+    const currentIds = new Set([...livePlayerViews.flatMap(entry => [
+        ...entry.permanentViews, ...entry.handViews, ...(entry.zoneViews ?? []),
+    ]), ...linkedExileViews].map(view => view.cardId));
+    for (const id of liveCardPositions.keys()) {
+        if (!currentIds.has(id)) liveCardPositions.delete(id);
+    }
     refreshImageDiagnostics();
     layoutScene();
+    // Complete the displayed scene on the actual animation ticker, not a guessed delay.
+    // A superseding scene replaces this marker: cancelled transitions never emit audio.
+    visualSceneLatch.queue(props.scene);
 }
 
 function buildScene() {
@@ -1508,21 +1583,12 @@ function layoutRow(views, centerX, centerY, maxWidth, scale = 0.78) {
 
 function layoutHand(width, height) {
     const count = handViews.length;
-    const scale = pixiHandScale({ cardCount: count, local: true, width });
-    const minimumWidth = width < 480 ? 80 : (width < 640 ? 160 : 240);
-    const available = Math.min(980, Math.max(minimumWidth, width - 520));
-    const spacing = count <= 1
-        ? 0
-        : Math.min(cardWidth * scale * 0.74, available / (count - 1));
-    const startX = width / 2 - ((count - 1) * spacing) / 2;
-    const visibleHeight = Math.min(124, cardHeight * scale * 0.64);
-    const restY = height + cardHeight * scale / 2 - visibleHeight;
+    const fan = pixiHandFan({ cardCount: count, width, height, cardWidth, cardHeight });
     handViews.forEach((view, index) => {
-        const centerOffset = index - (count - 1) / 2;
-        const rotation = centerOffset * 0.025;
+        const { x, y, rotation, scale } = fan[index];
         view.handIndex = index;
-        view.restX = startX + index * spacing;
-        view.restY = restY + Math.abs(centerOffset) * 2.5;
+        view.restX = x;
+        view.restY = y;
         view.restRotation = rotation;
         view.restScale = scale;
         if (!view.hovered) {
@@ -1597,11 +1663,6 @@ function layoutLiveHand(views, player, anchor, width, height) {
         handViews = views;
         layoutHand(width, height);
         views.forEach((view, index) => {
-            view.restScale = pixiHandScale({
-                cardCount: views.length,
-                local: true,
-                width,
-            });
             view.restZIndex = index;
         });
         return;
@@ -1688,7 +1749,7 @@ function layoutLiveScene(width, height) {
     const opponents = livePlayerViews.filter(entry => entry !== localEntry);
     const playerCount = livePlayerViews.length;
     if (localEntry) {
-        const anchor = { x: width * 0.5, y: height * 0.64 };
+        const anchor = { x: width * 0.5, y: height * 0.49 };
         livePlayerAnchors.set(localEntry.player.id, anchor);
         layoutLivePlayerBoard(localEntry, anchor, width, playerCount);
         layoutLiveHand(localEntry.handViews, localEntry.player, anchor, width, height);
@@ -1829,6 +1890,8 @@ function updateAnimations() {
             animatedViews.delete(view);
         }
     }
+    const settled = visualSceneLatch.settle(animatedViews.size > 0);
+    if (settled) emit('visual-settled', settled);
     arrowAlpha = (Math.sin(performance.now() / 130) + 1) / 2;
     if (attackArrow) {
         drawCombatArrow();
@@ -2141,6 +2204,17 @@ watch(
 
 onMounted(async () => {
     await nextTick();
+    emit('controls-ready', extensionControls.value);
+    if (typeof ResizeObserver !== 'undefined') {
+        toolbarObserver = new ResizeObserver(() => {
+            const height = extensionControls.value?.childElementCount
+                ? Math.ceil(toolbarElement.value?.getBoundingClientRect().height ?? 0) : 0;
+            if (toolbarHeight.value === height) return;
+            toolbarHeight.value = height;
+            void nextTick(() => app?.resize());
+        });
+        toolbarObserver.observe(toolbarElement.value);
+    }
     window.addEventListener('resize', updateCompactViewport);
     updateCompactViewport();
     if (import.meta.env.MODE === 'test') {
@@ -2163,26 +2237,53 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+    toolbarObserver?.disconnect();
+    visualSceneLatch.cancel();
+    emit('controls-ready', null);
     window.removeEventListener('resize', updateCompactViewport);
     window.clearTimeout(mobileFocusTimer);
     mobileFocusTimer = null;
+    disposed = true;
+    for (const cancel of cancelImageLoads) cancel();
+    imageTextureCache.destroy();
     if (!app) {
         return;
     }
     app.renderer.off('resize', layoutScene);
     app.ticker.remove(updateAnimations);
     app.destroy(true, { children: true, texture: false, baseTexture: false });
-    for (const texture of textures) {
-        texture.destroy(true);
-    }
-    textures.clear();
-    imageTexturePromises.clear();
     liveCardPositions.clear();
     app = null;
 });
 </script>
 
 <style scoped>
+.pixi-counter-inspector {
+    position: absolute;
+    right: 0.75rem;
+    bottom: 4.5rem;
+    z-index: 25;
+    max-width: min(20rem, calc(100% - 1.5rem));
+    color: #ffe1a2;
+    background: rgb(35 27 16 / 97%);
+    border: 1px solid #c99748;
+    border-radius: 0.65rem;
+    box-shadow: 0 4px 20px #0005;
+    font: 600 0.8rem system-ui;
+}
+.pixi-counter-inspector summary { cursor: pointer; padding: 0.55rem 0.8rem; }
+.pixi-counter-inspector summary:focus-visible { outline: 2px solid #ffe1a2; outline-offset: 2px; }
+.pixi-counter-list { max-height: min(45vh, 22rem); overflow-y: auto; padding: 0 0.8rem 0.65rem; }
+.pixi-counter-list section + section { border-top: 1px solid #c9974866; padding-top: 0.55rem; }
+.pixi-counter-list strong, .pixi-counter-list small { display: block; overflow-wrap: anywhere; }
+.pixi-counter-list small { opacity: 0.8; font-weight: 400; }
+.pixi-counter-list dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.2rem 0.75rem; }
+.pixi-counter-list dt { overflow-wrap: anywhere; }
+.pixi-counter-list dd { margin: 0; font-variant-numeric: tabular-nums; }
+@media (max-width: 700px) {
+    .pixi-counter-inspector { bottom: calc(6rem + env(safe-area-inset-bottom, 0px)); }
+}
+
 .pixi-game-prototype {
     background: #04100d;
     border: 1px solid #1f5546;
@@ -3163,5 +3264,32 @@ onBeforeUnmount(() => {
         grid-template-columns: repeat(3, minmax(0, 1fr));
         max-height: calc(min(44vh, 24rem) - 4rem);
     }
+}
+/* Host applications can mount accessible controls in the existing bottom toolbar. */
+.pixi-game-canvas { height: calc(100% - var(--pixi-toolbar-height, 0px)); bottom: var(--pixi-toolbar-height, 0px); }
+.pixi-player-hud-local { bottom: calc(.55rem + var(--pixi-toolbar-height, 0px)); left:50%; transform:translateX(-50%); }
+.pixi-life-orb, .pixi-life-orb.local { width:2.35rem;min-width:2.35rem;height:2.35rem;font-size:1.02rem; }
+.pixi-player-hud-local .pixi-player-identity { max-width:min(28vw,14rem);min-width:0; }
+.pixi-player-hud-local .pixi-player-identity > span { font-size:.65rem; }
+.pixi-game-controls:has(.pixi-extension-controls:not(:empty)) .pixi-replay-label { display: none; }
+.pixi-extension-controls { display: flex; align-items: center; gap: .65rem; min-width: 0; flex-wrap: wrap; }
+.pixi-game-controls:has(.pixi-extension-controls:not(:empty)) {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-width: none;
+    min-height: 3.25rem;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    padding: .4rem .7rem;
+    box-sizing: border-box;
+    border-top: 1px solid #d0d5dd;
+    background: rgb(255 253 251 / 96%);
+}
+.pixi-extension-controls:not(:empty) { margin-right: auto; }
+@media (max-width: 600px) {
+    .pixi-game-controls:has(.pixi-extension-controls:not(:empty)) { gap: .35rem; padding: .35rem; }
+    .pixi-extension-controls:not(:empty) { flex: 1 1 100%; }
 }
 </style>

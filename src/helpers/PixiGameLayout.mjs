@@ -6,6 +6,25 @@ export const PIXI_CARD_OUTLINE_COLORS = Object.freeze({
     targetable: 0xdc2626,
 });
 
+// Counter names come from the Engine, not a UI whitelist. Keep unlike counters
+// separate (a +1/+1 and a -1/-1 are not a single anonymous “2” counter).
+export function pixiCounterEntries(counters = {}) {
+    if (typeof counters === 'number') {
+        return Number.isFinite(counters) && counters > 0
+            ? [{ name: 'Marqueurs', count: counters }]
+            : [];
+    }
+    if (!counters || typeof counters !== 'object' || Array.isArray(counters)) {
+        return [];
+    }
+    return Object.entries(counters).flatMap(([name, value]) => {
+        const count = Number(value);
+        return name.trim() && Number.isFinite(count) && count > 0
+            ? [{ name, count }]
+            : [];
+    }).sort((left, right) => left.name.localeCompare(right.name));
+}
+
 export function pixiCardOutlineColor(card = {}) {
     if (card.targetable) {
         return PIXI_CARD_OUTLINE_COLORS.targetable;
@@ -108,6 +127,30 @@ export function pixiHandScale({ cardCount = 0, local = false, width = 1280 }) {
                 ? local ? 0.18 : 0.1
                 : local ? 0.3 : 0.16;
     return Math.max(local ? 0.82 : 0.4, roomyScale - densityPenalty);
+}
+
+// Keep the complete card (including its rotated corners) inside the canvas.
+// The fan arches over the centered life orb, not beneath the bottom toolbar.
+export function pixiHandFan({ cardCount, width, height, cardWidth = 118, cardHeight = 166 }) {
+    const scale = Math.min(pixiHandScale({ cardCount, local: true, width }), Math.max(.54, height * .26 / cardHeight));
+    const halfWidth = cardWidth * scale / 2;
+    const halfHeight = cardHeight * scale / 2;
+    const maxRotation = 0.16;
+    const cornerX = halfWidth + halfHeight * Math.sin(maxRotation);
+    const cornerY = halfHeight + halfWidth * Math.sin(maxRotation);
+    const available = Math.max(0, Math.min(980, width - cornerX * 2 - 20));
+    const spacing = cardCount <= 1 ? 0 : Math.min(cardWidth * scale * .66, available / (cardCount - 1));
+    const arcHeight = Math.min(32, height * .055);
+    const baseY = height - 66 - cornerY;
+    return Array.from({ length: cardCount }, (_, index) => {
+        const relative = cardCount <= 1 ? 0 : (index / (cardCount - 1)) * 2 - 1;
+        return {
+            x: width / 2 + (index - (cardCount - 1) / 2) * spacing,
+            y: Math.max(cornerY + 12, baseY - arcHeight * (1 - relative * relative)),
+            rotation: relative * maxRotation,
+            scale,
+        };
+    });
 }
 
 export function pixiPermanentScale({ largestGroup = 0, playerCount = 2, width = 1280 }) {

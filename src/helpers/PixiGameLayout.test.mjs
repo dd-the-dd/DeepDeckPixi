@@ -3,13 +3,43 @@ import { expect, test } from 'vitest';
 import {
     PIXI_CARD_OUTLINE_COLORS,
     pixiCardOutlineColor,
+    pixiCounterEntries,
     pixiCombatLinks,
     pixiHandScale,
     pixiHandCards,
+    pixiHandFan,
     pixiPermanentScale,
     pixiPrivateZonePosition,
     pixiToggledZoneKey,
 } from './PixiGameLayout.mjs';
+
+test('local hand fans fully inside desktop and mobile canvas, above the life orb', () => {
+    for (const [width, height] of [[1440, 780], [390, 490]]) {
+        for (const cardCount of [1, 7, 14, 24]) {
+            const fan = pixiHandFan({cardCount, width, height});
+            for (const card of fan) {
+                const halfX = (118 * Math.cos(card.rotation) + 166 * Math.abs(Math.sin(card.rotation))) * card.scale / 2;
+                const halfY = (166 * Math.cos(card.rotation) + 118 * Math.abs(Math.sin(card.rotation))) * card.scale / 2;
+                expect(card.x - halfX).toBeGreaterThanOrEqual(0);
+                expect(card.x + halfX).toBeLessThanOrEqual(width);
+                expect(card.y - halfY).toBeGreaterThanOrEqual(0);
+                expect(card.y + halfY).toBeLessThanOrEqual(height - 60);
+            }
+            if (cardCount > 1) expect(fan[Math.floor(cardCount / 2)].y).toBeLessThan(fan[0].y);
+        }
+    }
+});
+
+test('counter entries retain arbitrary names and never merge opposing counter types', () => {
+    expect(pixiCounterEntries({ '+1/+1': 1, '-1/-1': 1, loyalty: 5, charge: 3,
+        'a counter not known by the UI': 2, depleted: 0 })).toEqual(expect.arrayContaining([
+        { name: '+1/+1', count: 1 }, { name: '-1/-1', count: 1 },
+        { name: 'loyalty', count: 5 }, { name: 'charge', count: 3 },
+        { name: 'a counter not known by the UI', count: 2 },
+    ]));
+    expect(pixiCounterEntries({ empty: 0, bad: NaN, absent: null, minus: -1 })).toEqual([]);
+    expect(pixiCounterEntries(2)).toEqual([{ name: 'Marqueurs', count: 2 }]);
+});
 
 test('Pixi card outlines reflect cast permissions and their source zone', () => {
     expect(
