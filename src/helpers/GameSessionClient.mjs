@@ -132,10 +132,12 @@ function cardCatalogMetadata(card) {
         ...card,
         ...selected,
         canonicalRules: card?.canonicalRules ?? selected.canonicalRules ?? [],
-        imageUrl: selected.imageUrl ??
-            selected.urlFront ??
-            card?.imageUrl ??
-            card?.urlFront ??
+        imageUrl: selected.imageUrl ||
+            selected.imageUri ||
+            selected.urlFront ||
+            card?.imageUrl ||
+            card?.imageUri ||
+            card?.urlFront ||
             '',
     };
 }
@@ -150,7 +152,10 @@ function cardPresentationKey(name) {
 }
 
 function activeModalFaceIndex(definition, metadata) {
-    if (metadata?.layout !== 'modal_dfc') {
+    // Older League snapshots include front/back URLs and face names but omit
+    // layout. A distinct back URL still identifies a true double-faced card;
+    // split/adventure cards printed on one face must not flip their artwork.
+    if (metadata?.layout !== 'modal_dfc' && !metadata?.urlBack) {
         return -1;
     }
     const activeName = cardPresentationKey(definition?.name);
@@ -408,10 +413,11 @@ export function gameSessionCardCatalogFromDeckSelections(selections, gamePieces 
                 catalog[face.id] = {
                     ...metadata,
                     ...face,
-                    imageUrl: face.imageUrl ??
-                        face.urlFront ??
-                        metadata.imageUrl ??
-                        metadata.urlFront ??
+                    imageUrl: face.imageUrl ||
+                        face.imageUri ||
+                        face.urlFront ||
+                        metadata.imageUrl ||
+                        metadata.urlFront ||
                         '',
                 };
                 registerCardPresentation(
@@ -911,7 +917,11 @@ function displayCard(instance, cardCatalog, actions, sourceZone = '', calculated
     const isCommander = Boolean(definition.isCommander) || (definition.rules ?? []).some(rule => {
         return rule?.kind === 'rulesMarker' && rule?.text === 'Commander';
     });
-    const tokenKeys = definition.isToken ? tokenPresentationKeys(definition) : [];
+    // Compact saved frames predate isToken and engine-created tokens use a
+    // generated definition id/name ("Eldrazi Spawn Token"), not a printing id.
+    const isToken = Boolean(definition.isToken || instance.isToken ||
+        /^token:/iu.test(definition.id ?? '') || /^\s*token\b/iu.test(definition.typeLine ?? ''));
+    const tokenKeys = isToken ? tokenPresentationKeys(definition) : [];
     const playerScopes = [...new Set([instance.owner, instance.controller].filter(Boolean))];
     const scopedTokenMetadata = playerScopes
         .flatMap(playerId => tokenKeys.map(key => `${playerId}:${key}`))
@@ -920,18 +930,24 @@ function displayCard(instance, cardCatalog, actions, sourceZone = '', calculated
     const globalTokenMetadata = tokenKeys
         .map(key => cardCatalog[key])
         .find(Boolean);
+    const embeddedMetadata = {
+        ...definition,
+        ...instance,
+        imageUrl: instance.imageUrl || instance.imageUri || definition.imageUrl || definition.imageUri || '',
+    };
     const metadata = cardCatalog[definition.id] ??
         scopedTokenMetadata ??
         cardCatalog[cardPresentationKey(definition.name)] ??
         globalTokenMetadata ??
-        {};
+        embeddedMetadata;
     const transformed = Boolean(instance.flags?.transformed);
     const showingBackFace = transformed || activeModalFaceIndex(definition, metadata) > 0;
     const cardActions = actions.filter(action => {
         return gameSessionActionCardId(action) === instance.instanceId;
     });
     const presentationActions = gameSessionActionPresentations(cardActions);
-    const counterModifier = Number(instance.counters?.['+1/+1'] ?? 0);
+    const counterModifier = Number(instance.counters?.['+1/+1'] ?? 0) -
+        Number(instance.counters?.['-1/-1'] ?? 0);
     const effectiveStats = calculatedStats[instance.instanceId] ?? null;
     const currentStat = (base, modifier) => {
         if (base === null || base === undefined) {
@@ -950,10 +966,12 @@ function displayCard(instance, cardCatalog, actions, sourceZone = '', calculated
         currentToughness: effectiveStats?.currentToughness ??
             currentStat(definition.toughness, instance.toughnessModifier),
         id: instance.instanceId,
+        definitionId: definition.id,
         isCommander,
+        isToken,
         imageUrl: showingBackFace
-            ? metadata.urlBack ?? metadata.imageUrl ?? metadata.urlFront ?? ''
-            : metadata.imageUrl ?? metadata.urlFront ?? '',
+            ? metadata.urlBack || metadata.imageBackUri || metadata.imageUrl || metadata.urlFront || embeddedMetadata.imageUrl || ''
+            : metadata.imageUrl || metadata.urlFront || metadata.imageUri || embeddedMetadata.imageUrl || '',
         manaCost: definition.manaCost ?? '',
         name: definition.name ?? metadata.name ?? 'Unknown card',
         power: definition.power ?? null,
@@ -982,14 +1000,17 @@ function displayCard(instance, cardCatalog, actions, sourceZone = '', calculated
 }
 
 function zoneView(instances, cardCatalog, actions, sourceZone) {
-    const cards = instances.map(instance => {
+    // Local spectator streams deliberately replace private sideboard cards
+    // with null. Preserve the zone count without resolving identities/artwork
+    // from the catalog or passing a concealed slot to displayCard.
+    const cards = instances.filter(instance => instance && typeof instance === 'object').map(instance => {
         return displayCard(instance, cardCatalog, actions, sourceZone);
     });
     return {
         actionable: cards.some(card => card.actionState.actionable),
         cards,
-        count: cards.length,
-        top: cards.at(-1) ?? null,
+        count: instances.length,
+        top: instances.at(-1) ? cards.at(-1) ?? null : null,
     };
 }
 
@@ -1138,17 +1159,30 @@ function resolutionBoardTargetChoice(state, decision) {
             return (player.battlefield ?? []).map(card => card.instanceId);
         }),
     );
+    const stackIds = new Set((state.stack ?? []).map(object => object.id));
+    const visualTarget = selected => {
+        if (typeof selected !== 'string') return null;
+        // Ordinary resolution choices use raw IDs. Copy/retarget choices use
+        // typed IDs; preserve the entire suffix because IDs themselves contain colons.
+        if (playerIds.has(selected)) return { player: { playerId: selected } };
+        if (permanentIds.has(selected)) return { permanent: { instanceId: selected } };
+        if (stackIds.has(selected)) return { stackObject: { stackId: selected } };
+        const separator = selected.indexOf(':');
+        if (separator < 0) return null;
+        const kind = selected.slice(0, separator);
+        const id = selected.slice(separator + 1);
+        if (kind === 'player' && playerIds.has(id)) return { player: { playerId: id } };
+        if (kind === 'permanent' && permanentIds.has(id)) return { permanent: { instanceId: id } };
+        if (kind === 'stack' && stackIds.has(id)) return { stackObject: { stackId: id } };
+        if (kind === 'card' && permanentIds.has(id)) return { card: { instanceId: id } };
+        return null;
+    };
     const actions = (decision.options ?? []).flatMap(action => {
         const selected = action.decisions?.[choice.decisionId];
         if (action.kind !== 'chooseResolution' || !Array.isArray(selected) || selected.length !== 1) {
             return [];
         }
-        const selectedId = selected[0];
-        const target = playerIds.has(selectedId)
-            ? { player: { playerId: selectedId } }
-            : permanentIds.has(selectedId)
-                ? { permanent: { instanceId: selectedId } }
-                : null;
+        const target = visualTarget(selected[0]);
         return target
             ? [{ ...action, targetOrder: [targetKey], targets: { [targetKey]: target } }]
             : [];

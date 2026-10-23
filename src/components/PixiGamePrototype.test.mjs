@@ -23,6 +23,35 @@ function liveScene(controls = {}) {
 }
 
 describe('Pixi game controls', () => {
+    test('exposes one extension host inside its existing bottom toolbar, and releases it on unmount', async () => {
+        const wrapper = mount(PixiGamePrototype, {props:{scene:liveScene(),mode:'replay'}});
+        await wrapper.vm.$nextTick();
+        const host = wrapper.get('.pixi-game-controls .pixi-extension-controls').element;
+        expect(wrapper.findAll('.pixi-extension-controls')).toHaveLength(1);
+        expect(wrapper.emitted('controls-ready')[0]).toEqual([host]);
+        expect(wrapper.emitted('visual-settled')).toBeUndefined();
+        wrapper.unmount();
+        expect(wrapper.emitted('controls-ready').at(-1)).toEqual([null]);
+    });
+    test('keeps typed counters in render models and exposes all types in a keyboard/touch inspector', async () => {
+        const counters = { '+1/+1': 1, '-1/-1': 1, loyalty: 4, charge: 3,
+            'a very long custom counter name': 2 };
+        const scene = liveScene();
+        scene.players = [{ id: 'p1', name: 'Pilot', local: true, life: 20,
+            hand: [], zones: [], battlefield: [{ id: 'ee', name: 'Engineered Explosives',
+                raw: { state: { counters } } }] }];
+        const wrapper = mount(PixiGamePrototype, { props: { scene } });
+        expect(wrapper.vm.sceneCardModel(scene.players[0].battlefield[0]).counters).toEqual(counters);
+        const inspector = wrapper.get('.pixi-counter-inspector');
+        expect(inspector.element.tagName).toBe('DETAILS');
+        expect(inspector.text()).toContain('Engineered Explosives');
+        expect(inspector.findAll('dt').map(entry => entry.text())).toEqual(expect.arrayContaining(Object.keys(counters)));
+        expect(inspector.findAll('dd')).toHaveLength(5);
+        // Fresh state removes stale markers instead of retaining the old badge.
+        await wrapper.setProps({ scene: { ...scene, players: [{ ...scene.players[0], battlefield: [] }] } });
+        expect(wrapper.find('.pixi-counter-inspector').exists()).toBe(false);
+        wrapper.unmount();
+    });
     test('opens a graveyard or exile from its table pile and toggles it closed', async () => {
         const scene = liveScene();
         scene.players = [{
