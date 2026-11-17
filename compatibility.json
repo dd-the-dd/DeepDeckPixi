@@ -1,6 +1,6 @@
 {
   "schemaVersion": "deepdeck-pixi-compatibility/v1",
-  "packageVersion": "0.1.0",
+  "packageVersion": "0.1.1",
   "engine": {
     "versions": [">=0.1.0 <0.2.0"],
     "agentProtocol": ["mtg-agent/v1"],
