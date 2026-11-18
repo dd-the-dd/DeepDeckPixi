@@ -151,7 +151,7 @@
           v-for="card in inspectedZone.zone.cards"
           :key="card.id"
           type="button"
-          :class="{ linked: card.linkedTo }"
+          :class="{ linked: card.linkedTo, selectable: card.selectable, selected: card.selected }"
           @click="handleKnownZoneCardClick(card, inspectedZone.player, inspectedZone.zone.id)"
           @focus="emitCardHover(card)"
           @blur="emit('card-leave')"
@@ -212,6 +212,22 @@
         </section>
       </div>
     </details>
+
+    <PixiDecisionPanel
+      v-if="decisionPanelVisible"
+      :model="decision"
+      :selection="decisionSelection"
+      :view="decisionView"
+      @cancel="applyDecisionResult(cancelDecisionSelection(decision))"
+      @card-hover="emitCardHover"
+      @card-leave="emit('card-leave')"
+      @card-name="applyDecisionResult(setDecisionCardName(decisionSelection, $event))"
+      @color="applyDecisionResult(chooseDecisionColor(decision, decisionSelection, $event))"
+      @confirm="applyDecisionResult(confirmDecisionSelection(decision, decisionSelection))"
+      @number="applyDecisionResult(setDecisionNumber(decision, decisionSelection, $event))"
+      @option="applyDecisionResult(chooseDecisionOption(decision, decisionSelection, $event))"
+      @tray-card="selectDecisionTableEntity({ id: $event, kind: 'card' })"
+    />
 
     <div ref="toolbarElement" class="pixi-game-controls">
       <div ref="extensionControls" class="pixi-extension-controls" />
@@ -304,6 +320,7 @@ import {
 } from 'pixi.js';
 import {
     pixiCardOutlineColor,
+    pixiCombatLinkColor,
     pixiCounterEntries,
     pixiHandScale,
     pixiHandFan,
@@ -313,11 +330,31 @@ import {
 } from '../helpers/PixiGameLayout.mjs';
 import { CardTextureCache } from '../helpers/CardTextureCache.mjs';
 import { VisualSceneLatch } from '../helpers/VisualSceneLatch.mjs';
+import {
+    cancelDecisionSelection,
+    chooseDecisionColor,
+    chooseDecisionOption,
+    confirmDecisionSelection,
+    createDecisionSelection,
+    decisionSelectionView,
+    pixiDecisionScene,
+    selectDecisionEntity,
+    setDecisionCardName,
+    setDecisionNumber,
+} from '../helpers/DecisionSelection.mjs';
+import PixiDecisionPanel from './PixiDecisionPanel.vue';
 
 const props = defineProps({
     cardBackUrl: {
         default: 'https://cards.scryfall.io/back.png',
         type: String,
+    },
+    // Optional decision model from `projectGameSessionView(...).decisionModel`
+    // (or `gameSessionDecisionModel`). When set in play mode, the table owns
+    // the decision interaction and emits `decision-submit`.
+    decision: {
+        default: null,
+        type: Object,
     },
     brandLogoUrl: {
         default: '',
@@ -350,6 +387,8 @@ const emit = defineEmits([
     'toggle-pass-stack',
     'toggle-priority',
     'controls-ready',
+    'decision-submit',
+    'decision-unsupported',
     'visual-settled',
 ]);
 const extensionControls = ref(null);
@@ -417,7 +456,35 @@ const demoPlayers = computed(() => [
 const isPlay = computed(() => props.mode === 'play');
 const isLiveGame = computed(() => isPlay.value && Boolean(props.scene));
 const isReplay = computed(() => props.mode === 'replay');
-const allPlayers = computed(() => props.scene?.players ?? demoPlayers.value);
+const decisionSelection = ref(createDecisionSelection(null));
+const decisionActive = computed(() => isLiveGame.value && Boolean(props.decision));
+const decisionView = computed(() => {
+    return decisionActive.value
+        ? decisionSelectionView(props.decision, decisionSelection.value)
+        : null;
+});
+// The scene actually drawn: the host scene plus the decision highlights
+// (selectable/selected outlines, targetable life totals, pending arrows).
+const renderScene = computed(() => {
+    return decisionView.value
+        ? pixiDecisionScene(props.scene, decisionView.value)
+        : props.scene;
+});
+const decisionPanelVisible = computed(() => {
+    const view = decisionView.value;
+    if (!view) {
+        return false;
+    }
+    if (view.primitive !== 'board' || view.stage !== 'source' || view.trayCardIds.length) {
+        return true;
+    }
+    const passHandledByToolbar = Boolean(props.scene?.controls?.showPassPriority);
+    return view.textOptions.some(option => {
+        const action = props.decision.actions.find(candidate => candidate.id === option.actionId);
+        return !(passHandledByToolbar && action?.kind === 'passPriority');
+    });
+});
+const allPlayers = computed(() => renderScene.value?.players ?? demoPlayers.value);
 const localPlayer = computed(() => {
     return allPlayers.value.find(player => player.local) ?? allPlayers.value[0] ?? null;
 });
@@ -454,7 +521,7 @@ const inspectedZone = computed(() => {
     });
     return player && zone ? { player, zone } : null;
 });
-const displayStackItems = computed(() => props.scene?.stack ?? stackItems.value);
+const displayStackItems = computed(() => renderScene.value?.stack ?? stackItems.value);
 const displayPhase = computed(() => props.scene?.phase ?? phase.value);
 const displayStatus = computed(() => props.scene?.status ?? status.value);
 const outcomeDetail = computed(() => {
@@ -988,7 +1055,7 @@ function createCardView(model, options = {}) {
     });
     if (outlineColor !== null) {
         const outline = new Graphics();
-        const outlineWidth = model.targetable ? 5 : 4;
+        const outlineWidth = model.targetable || model.selectable || model.selected ? 5 : 4;
         const outlineInset = outlineWidth / 2;
         outline.lineStyle(outlineWidth + 5, outlineColor, 0.24);
         outline.drawRoundedRect(
@@ -1087,6 +1154,9 @@ function createCardView(model, options = {}) {
                 });
                 return;
             }
+            if (selectDecisionTableCard(view.sceneCard)) {
+                return;
+            }
             const eventPayload = {
                 card: view.sceneCard.raw ?? view.sceneCard,
                 player: view.scenePlayer.raw ?? view.scenePlayer,
@@ -1159,6 +1229,8 @@ function sceneCardModel(card, sceneZone = '') {
         name: card.name ?? raw.name ?? 'Unknown card',
         rules: raw.oracleText ?? '',
         sceneZone: card.sourceZone || raw.sourceZone || sceneZone,
+        selectable: Boolean(card.selectable),
+        selected: Boolean(card.selected),
         selectionOrder: Number(card.selectionOrder ?? 0),
         stats: power !== null && power !== undefined
             ? `${power}/${toughness ?? 0}`
@@ -1216,6 +1288,8 @@ function liveViewFingerprint(card, zone, options = {}) {
         model.knownToViewer,
         model.name,
         model.rules,
+        model.selectable,
+        model.selected,
         model.selectionOrder,
         model.stats,
         model.targetable,
@@ -1375,7 +1449,7 @@ function createLiveZoneView(zone, player, indexedViews) {
 }
 
 function renderLiveScene() {
-    if (!app || !props.scene) {
+    if (!app || !renderScene.value) {
         return;
     }
     const indexedViews = indexLiveSceneViews();
@@ -1812,11 +1886,12 @@ function layoutScene() {
 
 function drawCombatArrow() {
     combatLayer.clear();
-    if (props.scene?.combat?.length) {
+    if (renderScene.value?.combat?.length) {
         const cardViews = new Map(
-            livePlayerViews.flatMap(entry => entry.permanentViews.map(view => [view.cardId, view])),
+            livePlayerViews.flatMap(entry => [...entry.handViews, ...entry.permanentViews]
+                .map(view => [view.cardId, view])),
         );
-        for (const link of props.scene.combat) {
+        for (const link of renderScene.value.combat) {
             const source = cardViews.get(link.sourceCardId);
             const target = cardViews.get(link.targetCardId) ??
                 livePlayerAnchors.get(link.targetPlayerId);
@@ -1825,7 +1900,12 @@ function drawCombatArrow() {
             }
             const targetX = target.targetX ?? target.x;
             const targetY = target.targetY ?? target.y;
-            const color = link.kind === 'block' ? 0x2563eb : 0xdc2626;
+            const color = pixiCombatLinkColor(link);
+            if (link.kind === 'fight') {
+                combatLayer.beginFill(color, 0.9);
+                combatLayer.drawCircle(source.targetX, source.targetY, 7);
+                combatLayer.endFill();
+            }
             combatLayer.lineStyle(5, color, 0.82);
             combatLayer.moveTo(source.targetX, source.targetY);
             combatLayer.bezierCurveTo(
@@ -2089,6 +2169,9 @@ function closeKnownZone() {
 }
 
 function handleKnownZoneCardClick(card, player, zone) {
+    if (selectDecisionTableCard(card)) {
+        return;
+    }
     emit('card-click', {
         card: card.raw ?? card,
         player: player.raw ?? player,
@@ -2165,15 +2248,56 @@ function isPhaseMarkerActive(player, marker) {
 }
 
 function handlePlayerClick(player) {
+    if (decisionActive.value) {
+        selectDecisionTableEntity({ id: String(player.id ?? player.key ?? ''), kind: 'player' });
+        return;
+    }
     if (isLiveGame.value && player.targetable) {
         emit('player-click', player.raw ?? player);
     }
 }
 
 function handleStackClick(item) {
+    if (decisionActive.value && item.targetable) {
+        selectDecisionTableEntity({ id: String(item.id), kind: 'stack' });
+        return;
+    }
     if (!isLiveGame.value || item.targetable) {
         emit('stack-click', item.raw ?? item);
     }
+}
+
+function applyDecisionResult(result) {
+    if (!result || result.ignored) {
+        return false;
+    }
+    if (result.submission) {
+        emit('decision-submit', result.submission);
+        decisionSelection.value = createDecisionSelection(props.decision);
+        return true;
+    }
+    decisionSelection.value = result.selection;
+    return true;
+}
+
+function selectDecisionTableEntity(entity) {
+    if (!decisionActive.value) {
+        return false;
+    }
+    return applyDecisionResult(
+        selectDecisionEntity(props.decision, decisionSelection.value, entity),
+    );
+}
+
+// Returns true when the active decision consumed the click. Grouped token
+// stacks resolve to the first legal (or selected) instance they contain.
+function selectDecisionTableCard(card) {
+    if (!decisionActive.value || !card) {
+        return false;
+    }
+    const id = card.decisionCardId || card.id;
+    selectDecisionTableEntity({ id: String(id ?? ''), kind: 'card' });
+    return true;
 }
 
 function emitCardHover(card) {
@@ -2183,7 +2307,25 @@ function emitCardHover(card) {
 }
 
 watch(
-    () => [props.scene, focusedOpponentId.value, compactViewport.value],
+    () => props.decision,
+    (decision, previous) => {
+        if (decision && decision.decisionId === previous?.decisionId) {
+            return;
+        }
+        decisionSelection.value = createDecisionSelection(decision);
+        if (decision?.unsupported) {
+            console.warn(
+                `[deepdeck-pixi] Decision ${decision.decisionId} (${decision.kind}) ` +
+                `has no dedicated primitive (${decision.unsupported}); showing Engine options as text.`,
+            );
+            emit('decision-unsupported', decision);
+        }
+    },
+    { immediate: true },
+);
+
+watch(
+    () => [renderScene.value, focusedOpponentId.value, compactViewport.value],
     () => {
         if (app) {
             renderLiveScene();
@@ -3177,6 +3319,8 @@ onBeforeUnmount(() => {
 }
 
 .pixi-zone-inspector-grid > button.linked { border-color: #0e7490; }
+.pixi-zone-inspector-grid > button.selectable { border-color: #f59e0b; box-shadow: 0 0 0 2px rgb(245 158 11 / 35%); }
+.pixi-zone-inspector-grid > button.selected { border-color: #16a34a; box-shadow: 0 0 0 2px rgb(22 163 74 / 35%); }
 .pixi-zone-inspector-grid img { aspect-ratio: 63 / 88; object-fit: cover; width: 100%; }
 .pixi-zone-inspector-grid span { font-size: 0.63rem; font-weight: 750; }
 .pixi-zone-inspector-grid small { color: #0e7490; font-size: 0.55rem; font-weight: 800; }

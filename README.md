@@ -32,6 +32,24 @@ decide whether an action is legal. Hosts may inject `brandName` and
 `brandLogoUrl`, which keeps DeepDeck Local visually distinct from Deep Deck
 League without forking the renderer.
 
+### Decision primitives
+
+`projectGameSessionView(view).decisionModel` maps the pending Engine decision
+to one UI primitive: board selection (outlined cards, life totals and stack
+objects; attacker/blocker then defender with arrows), card multi-select or
+ordering, text options, a numeric picker, a WUBRG color wheel or a card-name
+field. Unknown kinds fall back to the Engine options as text and emit
+`decision-unsupported`.
+
+```js
+const projection = projectGameSessionView(view, { cardCatalog });
+// <PixiGame :scene="scene" :decision="projection.decisionModel"
+//           @decision-submit="submission => client.submitDecision(view, submission)" />
+```
+
+The submission always echoes one of `view.decision.options[].id`, plus
+`numberValue`, `cardInstanceIds` or `cardName` when the typed choice needs it.
+
 ## Use the replay host
 
 ```js

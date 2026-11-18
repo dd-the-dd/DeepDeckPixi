@@ -1,3 +1,4 @@
+import { gameSessionDecisionModel, pixiFightPairs } from './DecisionPrimitives.mjs';
 import { defaultEngineBaseUrl } from './EngineBaseUrl.mjs';
 
 const gameSessionSchemaVersion = 'mtg-game-session/v1';
@@ -821,6 +822,61 @@ export function createGameSessionClient(options = {}) {
                 method: 'POST',
             });
         },
+        /**
+         * Submits a decision built by the decision primitives
+         * (`{ actionId, numberValue?, cardInstanceIds?, cardName? }`). The
+         * action must be one of the pending decision's Engine options.
+         */
+        submitDecision(view, submission = {}) {
+            const decision = view?.decision;
+            if (!decision) {
+                return Promise.reject(new Error('The Rust game session is not awaiting a decision.'));
+            }
+            if (submission.decisionId && submission.decisionId !== decision.id) {
+                return Promise.reject(
+                    new Error(`Decision ${submission.decisionId} is no longer pending.`),
+                );
+            }
+            const actionId = submission.actionId;
+            if (!(decision.options ?? []).some(action => action.id === actionId)) {
+                return Promise.reject(
+                    new Error(`Action ${actionId} is not offered by the Rust engine.`),
+                );
+            }
+            const body = { actionId, decisionId: decision.id, revision: view.revision };
+            const choiceKind = decision.choice?.kind;
+            if (choiceKind === 'numberSelection') {
+                const minimum = Number(decision.choice.minimum);
+                const maximum = Number(decision.choice.maximum);
+                const value = Number(submission.numberValue);
+                if (!Number.isInteger(value) || value < minimum || value > maximum) {
+                    return Promise.reject(
+                        new Error(`Number ${submission.numberValue} is outside ${minimum}..${maximum}.`),
+                    );
+                }
+                body.numberValue = value;
+            }
+            if (Array.isArray(submission.cardInstanceIds)) {
+                if (!['cardSelection', 'cardOrder'].includes(choiceKind)) {
+                    return Promise.reject(
+                        new Error('The Rust game session is not awaiting a card selection.'),
+                    );
+                }
+                body.cardInstanceIds = submission.cardInstanceIds.map(String);
+            }
+            if (choiceKind === 'cardNameSelection') {
+                const cardName = String(submission.cardName ?? '').trim();
+                if (!cardName || cardName.length > 256) {
+                    return Promise.reject(new Error('Choose a card name of 1 to 256 characters.'));
+                }
+                body.cardName = cardName;
+            }
+            return request(sessionPath(baseUrl, view.sessionId, '/actions'), {
+                body: JSON.stringify(body),
+                headers: { 'Content-Type': 'application/json' },
+                method: 'POST',
+            });
+        },
         updateSettings(sessionId, settings) {
             return request(sessionPath(baseUrl, sessionId, '/settings'), {
                 body: JSON.stringify(settings),
@@ -1465,11 +1521,36 @@ export function projectGameSessionView(view, options = {}) {
         }];
     });
 
+    const decisionModel = gameSessionDecisionModel(view, {
+        describeCard: (instanceId, knownInstance) => {
+            const instance = knownInstance ?? stateCardInstance(state, instanceId);
+            if (!instance) {
+                return null;
+            }
+            const card = displayCard(instance, cardCatalog, []);
+            return {
+                imageUrl: card.imageUrl,
+                name: card.name,
+                oracleText: card.oracleText ?? '',
+                typeLine: card.typeLine,
+            };
+        },
+    });
+
     return {
         actions,
         cardNameChoice,
-        combat: state.combat ?? { attackers: [], blockers: [] },
+        combat: {
+            attackers: [],
+            blockers: [],
+            ...(state.combat ?? {}),
+            fights: pixiFightPairs(state.events ?? [], {
+                step: state.step,
+                turnNumber: state.turnNumber,
+            }),
+        },
         decision,
+        decisionModel,
         decisionSourceCard,
         dungeonChoice,
         gameNotes,

@@ -1,4 +1,6 @@
 export { default as PixiGame } from './components/PixiGamePrototype.vue';
+export * from './helpers/DecisionPrimitives.mjs';
+export * from './helpers/DecisionSelection.mjs';
 export * from './helpers/EngineBaseUrl.mjs';
 export * from './helpers/GameSessionClient.mjs';
 export * from './helpers/PixiGameLayout.mjs';

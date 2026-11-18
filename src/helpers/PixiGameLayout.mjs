@@ -3,6 +3,8 @@ export const PIXI_CARD_OUTLINE_COLORS = Object.freeze({
     commandZone: 0xd4a72c,
     exile: 0xf97316,
     graveyard: 0x9333ea,
+    selectable: 0xf59e0b,
+    selected: 0x16a34a,
     targetable: 0xdc2626,
 });
 
@@ -26,6 +28,12 @@ export function pixiCounterEntries(counters = {}) {
 }
 
 export function pixiCardOutlineColor(card = {}) {
+    if (card.selected) {
+        return PIXI_CARD_OUTLINE_COLORS.selected;
+    }
+    if (card.selectable) {
+        return PIXI_CARD_OUTLINE_COLORS.selectable;
+    }
     if (card.targetable) {
         return PIXI_CARD_OUTLINE_COLORS.targetable;
     }
@@ -97,7 +105,34 @@ export function pixiCombatLinks(combat = {}) {
             targetPlayerId: '',
         }];
     });
-    return [...attackLinks, ...blockLinks];
+    const fightLinks = (combat?.fights ?? []).flatMap(pair => {
+        const firstId = transportValue(pair, 'firstId', 'first_id');
+        const secondId = transportValue(pair, 'secondId', 'second_id');
+        if (!firstId || !secondId) {
+            return [];
+        }
+        return [{
+            key: `fight:${firstId}:${secondId}`,
+            kind: 'fight',
+            sourceCardId: firstId,
+            targetCardId: secondId,
+            targetPlayerId: '',
+        }];
+    });
+    return [...attackLinks, ...blockLinks, ...fightLinks];
+}
+
+// Arrow colors by link kind: declared attacks, blocks, fights and the
+// pending (not yet submitted) selection of the local player.
+export const PIXI_COMBAT_LINK_COLORS = Object.freeze({
+    attack: 0xdc2626,
+    block: 0x2563eb,
+    fight: 0x9333ea,
+    pending: 0xf59e0b,
+});
+
+export function pixiCombatLinkColor(link = {}) {
+    return PIXI_COMBAT_LINK_COLORS[link.kind] ?? PIXI_COMBAT_LINK_COLORS.attack;
 }
 
 export function pixiPrivateZonePosition({
